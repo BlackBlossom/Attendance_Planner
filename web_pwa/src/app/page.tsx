@@ -8,7 +8,6 @@ import {
   RefreshCw,
   AlertCircle,
   GraduationCap,
-  Sparkles,
 } from "lucide-react";
 import { Navbar } from "@/components/navbar";
 import { LoginModal } from "@/components/login-modal";
@@ -26,6 +25,7 @@ import {
 
 export default function Home() {
   const [token, setToken] = useState<string | null>(null);
+  const [uid, setUid] = useState<string>("1405");
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"dashboard" | "calendar" | "planner">("dashboard");
 
@@ -53,13 +53,15 @@ export default function Home() {
     if (urlToken) {
       sessionStorage.setItem("erp_token", urlToken);
       setToken(urlToken);
-      // Clean query params from address bar
       window.history.replaceState({}, document.title, window.location.pathname);
       return;
     }
 
     // 2. Check sessionStorage
     const stored = sessionStorage.getItem("erp_token");
+    const storedUid = sessionStorage.getItem("erp_student_id");
+    if (storedUid) setUid(storedUid);
+
     if (stored) {
       setToken(stored);
     } else {
@@ -82,98 +84,123 @@ export default function Home() {
     if (outcome === "accepted") setDeferredPrompt(null);
   };
 
-  const loadData = useCallback(async (authToken: string) => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const headers = { Authorization: authToken };
-
-      // 1. Fetch Primary Attendance
-      const attRes = await fetch("/api/attendance", { headers });
-      if (attRes.status === 401) {
-        sessionStorage.removeItem("erp_token");
-        setToken(null);
-        setIsLoginOpen(true);
-        throw new Error("Session expired. Please log in again.");
-      }
-
-      const attData = await attRes.json();
-      if (attData.data) {
-        const studentInfo = attData.data;
-        const courseList: AttendanceCourseItem[] = studentInfo.attendanceCourseComponentInfoList || [];
-        setCourses(courseList);
-
-        let presentSum = 0;
-        let periodSum = 0;
-        courseList.forEach((c) => {
-          c.attendanceCourseComponentNameInfoList.forEach((comp) => {
-            presentSum += comp.numberOfPresent || 0;
-            periodSum += comp.numberOfPeriods || 0;
-          });
-        });
-        setTotalPresent(presentSum);
-        setTotalPeriods(periodSum);
-
-        setProfile({
-          fullName: studentInfo.fullName,
-          firstName: studentInfo.firstName,
-          lastName: studentInfo.lastName,
-          registrationNumber: studentInfo.registrationNumber,
-          rollNumber: studentInfo.rollNumber,
-          sectionName: studentInfo.sectionName,
-          branchShortName: studentInfo.branchShortName,
-          degreeName: studentInfo.degreeName,
-          semesterName: studentInfo.semesterName,
-          admissionBatchName: studentInfo.admissionBatchName,
-          academicSessionName: studentInfo.academicSessionName,
-          degreeBranchSemesterName: studentInfo.degreeBranchSemesterName,
-          totalComponent: studentInfo.totalComponent,
-        });
-      }
-
-      // 2. Fetch Profile details, photo, CGPA & upcoming classes
-      const profRes = await fetch("/api/profile", { headers });
-      if (profRes.ok) {
-        const profData = await profRes.json();
-        if (profData.photo) {
-          setProfile((prev) => (prev ? { ...prev, photoBase64: profData.photo } : prev));
+  const fetchScheduleForRange = useCallback(
+    async (authToken: string, userUid: string, startStr: string, endStr: string) => {
+      try {
+        const schedRes = await fetch(
+          `/api/schedule?weekStartDate=${startStr}&weekEndDate=${endStr}`,
+          {
+            headers: {
+              Authorization: authToken,
+              "x-erp-uid": userUid,
+            },
+          }
+        );
+        if (schedRes.ok) {
+          const schedData = await schedRes.json();
+          if (Array.isArray(schedData.data)) {
+            setSchedule(schedData.data);
+          }
         }
-        if (profData.cgpa) setCgpa(profData.cgpa);
-        if (profData.upcomingClasses) setUpcomingClasses(profData.upcomingClasses);
+      } catch (err) {
+        console.error("Failed to load schedule for range:", err);
       }
+    },
+    []
+  );
 
-      // 3. Fetch Past Day-Wise Attendance & Full-Day Absences
-      const pastRes = await fetch("/api/past-attendance", { headers });
-      if (pastRes.ok) {
-        const pastData = await pastRes.json();
-        if (pastData.days) setPastDays(pastData.days);
+  const loadData = useCallback(
+    async (authToken: string, userUid = uid) => {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        const headers = {
+          Authorization: authToken,
+          "x-erp-uid": userUid,
+        };
+
+        // 1. Fetch Primary Attendance
+        const attRes = await fetch("/api/attendance", { headers });
+        if (attRes.status === 401) {
+          sessionStorage.removeItem("erp_token");
+          sessionStorage.removeItem("erp_student_id");
+          setToken(null);
+          setIsLoginOpen(true);
+          throw new Error("Session expired. Please log in again.");
+        }
+
+        const attData = await attRes.json();
+        if (attData.data) {
+          const studentInfo = attData.data;
+          const courseList: AttendanceCourseItem[] =
+            studentInfo.attendanceCourseComponentInfoList || [];
+          setCourses(courseList);
+
+          let presentSum = 0;
+          let periodSum = 0;
+          courseList.forEach((c) => {
+            c.attendanceCourseComponentNameInfoList?.forEach((comp) => {
+              presentSum += comp.numberOfPresent || 0;
+              periodSum += comp.numberOfPeriods || 0;
+            });
+          });
+          setTotalPresent(presentSum);
+          setTotalPeriods(periodSum);
+
+          setProfile({
+            fullName: studentInfo.fullName,
+            firstName: studentInfo.firstName,
+            lastName: studentInfo.lastName,
+            registrationNumber: studentInfo.registrationNumber,
+            rollNumber: studentInfo.rollNumber,
+            sectionName: studentInfo.sectionName,
+            branchShortName: studentInfo.branchShortName,
+            degreeName: studentInfo.degreeName,
+            semesterName: studentInfo.semesterName,
+            admissionBatchName: studentInfo.admissionBatchName,
+            academicSessionName: studentInfo.academicSessionName,
+            degreeBranchSemesterName: studentInfo.degreeBranchSemesterName,
+            totalComponent: studentInfo.totalComponent,
+          });
+        }
+
+        // 2. Fetch Profile details, photo, CGPA & upcoming classes
+        const profRes = await fetch("/api/profile", { headers });
+        if (profRes.ok) {
+          const profData = await profRes.json();
+          if (profData.photo) {
+            setProfile((prev) => (prev ? { ...prev, photoBase64: profData.photo } : prev));
+          }
+          if (profData.cgpa) setCgpa(profData.cgpa);
+          if (profData.upcomingClasses) setUpcomingClasses(profData.upcomingClasses);
+        }
+
+        // 3. Fetch Past Day-Wise Attendance & Full-Day Absences
+        const pastRes = await fetch("/api/past-attendance", { headers });
+        if (pastRes.ok) {
+          const pastData = await pastRes.json();
+          if (Array.isArray(pastData.days)) setPastDays(pastData.days);
+        }
+
+        // 4. Fetch Schedule (default: current week from Sunday to Saturday)
+        const now = new Date();
+        const day = now.getDay();
+        const sunday = new Date(now);
+        sunday.setDate(now.getDate() - day);
+        const saturday = new Date(sunday);
+        saturday.setDate(sunday.getDate() + 6);
+
+        const fmt = (d: Date) => d.toISOString().split("T")[0];
+        await fetchScheduleForRange(authToken, userUid, fmt(sunday), fmt(saturday));
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Failed to synchronize data.");
+      } finally {
+        setIsLoading(false);
       }
-
-      // 4. Fetch Schedule for current week (Mon - Sun)
-      const now = new Date();
-      const currentDay = now.getDay();
-      const diffToMonday = currentDay === 0 ? -6 : 1 - currentDay;
-      const monday = new Date(now);
-      monday.setDate(now.getDate() + diffToMonday);
-      const saturday = new Date(monday);
-      saturday.setDate(monday.getDate() + 6);
-
-      const fmt = (d: Date) => d.toISOString().split("T")[0];
-      const schedRes = await fetch(
-        `/api/schedule?weekStartDate=${fmt(monday)}&weekEndDate=${fmt(saturday)}`,
-        { headers }
-      );
-      if (schedRes.ok) {
-        const schedData = await schedRes.json();
-        if (schedData.data) setSchedule(schedData.data);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to synchronize data.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    },
+    [uid, fetchScheduleForRange]
+  );
 
   useEffect(() => {
     if (token) {
@@ -181,9 +208,13 @@ export default function Home() {
     }
   }, [token, loadData]);
 
-  const handleLoginSuccess = (newToken: string) => {
+  const handleLoginSuccess = (newToken: string, studentId?: number) => {
     setIsLoginOpen(false);
     setToken(newToken);
+    if (studentId) {
+      setUid(String(studentId));
+      sessionStorage.setItem("erp_student_id", String(studentId));
+    }
   };
 
   const handleLogout = () => {
@@ -195,6 +226,12 @@ export default function Home() {
     setPastDays([]);
     setSchedule([]);
     setIsLoginOpen(true);
+  };
+
+  const handleScheduleRangeChange = (startStr: string, endStr: string) => {
+    if (token) {
+      fetchScheduleForRange(token, uid, startStr, endStr);
+    }
   };
 
   return (
@@ -293,7 +330,7 @@ export default function Home() {
                   }`}
                 >
                   <SlidersHorizontal className="w-4 h-4" />
-                  <span>Bunk Planner</span>
+                  <span>Bunk Planner & Simulator</span>
                 </button>
               </div>
 
@@ -322,13 +359,14 @@ export default function Home() {
             {/* Tab 2: Calendar & Absences */}
             {activeTab === "calendar" && <CalendarView days={pastDays} />}
 
-            {/* Tab 3: Future Bunk Planner */}
+            {/* Tab 3: Future Bunk Planner & Simulator */}
             {activeTab === "planner" && (
               <SchedulePlanner
                 schedule={schedule}
                 courses={courses}
                 onExportICS={() => {}}
                 isLoading={isLoading}
+                onRangeChange={handleScheduleRangeChange}
               />
             )}
           </>

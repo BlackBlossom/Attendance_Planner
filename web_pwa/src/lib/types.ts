@@ -69,7 +69,7 @@ export interface RegisteredCourse {
 }
 
 export interface LectureAttendanceRecord {
-  lectureDate: string; // e.g. "2026-09-15" or DD/MM/YYYY
+  lectureDate: string;
   attendanceStatus: "P" | "A" | string;
   lectureNumber?: number;
   courseName?: string;
@@ -100,7 +100,9 @@ export interface ScheduleClassItem {
   courseCode: string;
   courseCompName: string;
   type: string;
-  plannedAttend?: boolean; // For future projection toggle
+  facultyName?: string;
+  classRoom?: string;
+  plannedAttend?: boolean;
 }
 
 export interface LoginInitiateResponse {

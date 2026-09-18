@@ -10,13 +10,14 @@ interface OverallCardProps {
 }
 
 export const OverallCard: React.FC<OverallCardProps> = ({ totalPresent, totalPeriods }) => {
-  const metrics = calculateMetrics(totalPresent, totalPeriods);
+  const metrics75 = calculateMetrics(totalPresent, totalPeriods, 75);
+  const metrics60 = calculateMetrics(totalPresent, totalPeriods, 60);
 
-  const isSafe = metrics.percentage >= 75;
-  const isWarning = metrics.percentage >= 65 && metrics.percentage < 75;
+  const isSafe = metrics75.percentage >= 75;
+  const isWarning = metrics75.percentage >= 65 && metrics75.percentage < 75;
 
   return (
-    <div className="relative overflow-hidden rounded-2xl p-6 bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 shadow-sm">
+    <div className="relative overflow-hidden rounded-2xl p-6 bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 shadow-xs">
       {/* Background Accent glow */}
       <div
         className={`absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 rounded-full blur-3xl opacity-20 pointer-events-none ${
@@ -28,7 +29,7 @@ export const OverallCard: React.FC<OverallCardProps> = ({ totalPresent, totalPer
         {/* Metric Overview */}
         <div className="flex items-start gap-4">
           <div
-            className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-sm ${
+            className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-2xs ${
               isSafe
                 ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400"
                 : isWarning
@@ -65,10 +66,10 @@ export const OverallCard: React.FC<OverallCardProps> = ({ totalPresent, totalPer
 
             <div className="flex items-baseline gap-3 mt-1">
               <span className="text-4xl font-extrabold tracking-tight text-zinc-900 dark:text-zinc-50">
-                {metrics.percentage}%
+                {metrics75.percentage}%
               </span>
               <span className="text-sm text-zinc-500 dark:text-zinc-400 font-medium">
-                {metrics.present} attended of {metrics.total} total
+                {metrics75.present} attended of {metrics75.total} total
               </span>
             </div>
           </div>
@@ -107,8 +108,8 @@ export const OverallCard: React.FC<OverallCardProps> = ({ totalPresent, totalPer
                 }`}
               >
                 {isSafe
-                  ? `${metrics.safeBunks75} safe bunks left`
-                  : `Need ${metrics.classesNeeded75} more classes`}
+                  ? `${metrics75.safeBunks} safe bunks left`
+                  : `Need ${metrics75.classesNeeded} more classes`}
               </div>
               <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
                 {isSafe
@@ -126,12 +127,12 @@ export const OverallCard: React.FC<OverallCardProps> = ({ totalPresent, totalPer
                 60% Minimum Safe
               </div>
               <div className="text-sm font-bold text-zinc-900 dark:text-zinc-100 mt-0.5">
-                {metrics.percentage >= 60
-                  ? `${metrics.safeBunks60} safe bunks`
-                  : `Need ${metrics.classesNeeded60} classes`}
+                {metrics60.percentage >= 60
+                  ? `${metrics60.safeBunks} safe bunks`
+                  : `Need ${metrics60.classesNeeded} classes`}
               </div>
               <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                For exam eligibility (admit card).
+                For university exam admit card.
               </div>
             </div>
           </div>
