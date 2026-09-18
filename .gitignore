@@ -1,0 +1,41 @@
+# Sensitive credentials and tokens
+api.txt
+secrets.txt
+token.txt
+*.token
+.env
+.env.*
+
+# Student attendance data dumps & test data
+attendance.json
+anant_attendance.json
+*.csv
+
+# Standalone subprojects & unrelated scripts
+cybervidyapages/
+disk_analyser.py
+index.html
+payment.html
+
+# Python cache & build files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

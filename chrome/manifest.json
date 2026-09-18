@@ -1,0 +1,23 @@
+{
+	"manifest_version": 3,
+	"name": "Attendance Planner Auth Bridge",
+	"version": "1.0",
+	"description": "Project-exclusive auth bridge for Attendance Planner (KIET ERP -> local Streamlit app).",
+	"permissions": ["storage"],
+	"host_permissions": [
+		"https://kiet.cybervidya.net/*",
+		"http://localhost:8501/*",
+		"http://127.0.0.1:8501/*"
+	],
+	"content_scripts": [
+		{
+			"matches": [
+				"https://kiet.cybervidya.net/*",
+				"http://localhost:8501/*",
+				"http://127.0.0.1:8501/*"
+			],
+			"js": ["content.js"],
+			"run_at": "document_end"
+		}
+	]
+}
