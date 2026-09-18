@@ -9,16 +9,16 @@ import {
   Clock,
   MapPin,
   Sparkles,
-  AlertTriangle,
-  CheckCircle2,
-  Calendar,
   Layers,
   Zap,
   TrendingUp,
-  ShieldCheck,
-  ShieldAlert,
-  HelpCircle,
   Filter,
+  Calendar as CalendarIcon,
+  Sun,
+  Palmtree,
+  CalendarOff,
+  ArrowRight,
+  RefreshCw,
 } from "lucide-react";
 import { ScheduleClassItem, AttendanceCourseItem } from "@/lib/types";
 import {
@@ -47,18 +47,64 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   // Target percentage (default 75%)
   const [targetPercent, setTargetPercent] = useState<number>(75);
 
-  // Day filter (All, Monday, Tuesday, etc.)
-  const [selectedDayFilter, setSelectedDayFilter] = useState<string>("all");
-  const [selectedCourseFilter, setSelectedCourseFilter] = useState<string>("all");
+  // Custom Date Range State
+  const [customStart, setCustomStart] = useState<string>(() => {
+    const now = new Date();
+    const day = now.getDay();
+    const sunday = new Date(now);
+    sunday.setDate(now.getDate() - day);
+    return sunday.toISOString().split("T")[0];
+  });
 
-  // Date range state
-  const [rangePreset, setRangePreset] = useState<"current" | "next" | "twoWeeks" | "month">("current");
+  const [customEnd, setCustomEnd] = useState<string>(() => {
+    const now = new Date();
+    const day = now.getDay();
+    const saturday = new Date(now);
+    saturday.setDate(now.getDate() + (6 - day));
+    return saturday.toISOString().split("T")[0];
+  });
+
+  const [rangePreset, setRangePreset] = useState<"current" | "next" | "twoWeeks" | "month" | "custom">("current");
+
+  // Subject and Day Filter
+  const [selectedCourseFilter, setSelectedCourseFilter] = useState<string>("all");
 
   // Interactive plan state: class unique key -> boolean (true = attend, false = bunk)
   const [planMap, setPlanMap] = useState<{ [key: string]: boolean }>({});
 
+  // Holiday dates state: Set of date keys (normalized YYYY-MM-DD or DD/MM/YYYY)
+  const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
+
+  // Helper to normalize any date string to YYYY-MM-DD for consistent key comparison
+  const normalizeDate = (rawStr?: string): string => {
+    if (!rawStr) return "";
+    const datePart = rawStr.split(" ")[0].trim();
+    if (datePart.includes("/")) {
+      const [d, m, y] = datePart.split("/");
+      if (d && m && y) return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    }
+    return datePart;
+  };
+
   const getClassKey = (item: ScheduleClassItem, idx: number) => {
     return `${item.courseCode || "c"}_${item.start || idx}`;
+  };
+
+  const isHoliday = (item: ScheduleClassItem) => {
+    const dateKey = normalizeDate(item.start);
+    return holidayDates.has(dateKey);
+  };
+
+  const toggleHolidayForDate = (dateKey: string) => {
+    setHolidayDates((prev) => {
+      const next = new Set(prev);
+      if (next.has(dateKey)) {
+        next.delete(dateKey);
+      } else {
+        next.add(dateKey);
+      }
+      return next;
+    });
   };
 
   const isClassAttended = (item: ScheduleClassItem, idx: number) => {
@@ -67,6 +113,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   };
 
   const toggleClass = (item: ScheduleClassItem, idx: number) => {
+    if (isHoliday(item)) return; // Holidays are non-interactive
     const key = getClassKey(item, idx);
     const currentVal = isClassAttended(item, idx);
     setPlanMap((prev) => ({ ...prev, [key]: !currentVal }));
@@ -75,16 +122,17 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   const markAll = (attend: boolean) => {
     const updated: { [key: string]: boolean } = {};
     schedule.forEach((item, idx) => {
-      updated[getClassKey(item, idx)] = attend;
+      if (!isHoliday(item)) {
+        updated[getClassKey(item, idx)] = attend;
+      }
     });
     setPlanMap(updated);
   };
 
-  const markDay = (dayNameOrDate: string, attend: boolean) => {
+  const markDay = (targetDateKey: string, attend: boolean) => {
     const updated = { ...planMap };
     schedule.forEach((item, idx) => {
-      const datePart = item.start?.split(" ")[0] || "";
-      if (datePart.includes(dayNameOrDate)) {
+      if (normalizeDate(item.start) === targetDateKey && !isHoliday(item)) {
         updated[getClassKey(item, idx)] = attend;
       }
     });
@@ -111,12 +159,18 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     return map;
   }, [courses]);
 
-  // Compute end-to-end subject-wise and overall projections
-  const { subjectProjections, overallProjection } = useMemo(() => {
-    // Tally planned classes by course code
+  // Compute end-to-end subject-wise and overall projections (EXCLUDING HOLIDAYS)
+  const { subjectProjections, overallProjection, holidayClassesCount } = useMemo(() => {
     const plannedByCourse = new Map<string, { totalUpcoming: number; plannedAttended: number }>();
+    let holidaysCount = 0;
 
     schedule.forEach((item, idx) => {
+      // If day is marked as Holiday, skip completely from attendance math!
+      if (isHoliday(item)) {
+        holidaysCount += 1;
+        return;
+      }
+
       const code = item.courseCode || "OTHER";
       if (!plannedByCourse.has(code)) {
         plannedByCourse.set(code, { totalUpcoming: 0, plannedAttended: 0 });
@@ -198,13 +252,36 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
       status: overallMetrics.status,
     };
 
-    return { subjectProjections: subjects, overallProjection: overall };
-  }, [schedule, courseBaseMap, planMap, targetPercent]);
+    return {
+      subjectProjections: subjects,
+      overallProjection: overall,
+      holidayClassesCount: holidaysCount,
+    };
+  }, [schedule, courseBaseMap, planMap, holidayDates, targetPercent]);
 
-  // Smart Bunk Advisor list: Evaluate upcoming classes for safe vs dangerous bunks
+  // Group classes by Date for clean UI
+  const classesByDate = useMemo(() => {
+    const groups: { [dateKey: string]: { rawDate: string; items: { item: ScheduleClassItem; idx: number }[] } } = {};
+
+    schedule.forEach((item, idx) => {
+      const dateKey = normalizeDate(item.start);
+      if (!groups[dateKey]) {
+        groups[dateKey] = {
+          rawDate: item.start?.split(" ")[0] || dateKey,
+          items: [],
+        };
+      }
+      groups[dateKey].items.push({ item, idx });
+    });
+
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [schedule]);
+
+  // Smart Bunk Advisor list
   const smartBunkRecommendations = useMemo(() => {
     const list: (ScheduleClassItem & { advice: any; index: number })[] = [];
     schedule.forEach((item, idx) => {
+      if (isHoliday(item)) return; // Holidays don't need bunk advice
       const code = item.courseCode;
       const base = courseBaseMap.get(code);
       if (base) {
@@ -213,17 +290,17 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
       }
     });
     return list;
-  }, [schedule, courseBaseMap, targetPercent]);
+  }, [schedule, courseBaseMap, holidayDates, targetPercent]);
 
-  // Apply one-click "Optimal Bunk Strategy": attend critical, safely bunk high-buffer
+  // Optimal Bunk Strategy
   const applyOptimalStrategy = () => {
     const updated = { ...planMap };
     schedule.forEach((item, idx) => {
+      if (isHoliday(item)) return;
       const code = item.courseCode;
       const base = courseBaseMap.get(code);
       if (base) {
         const advice = evaluateBunkAdvice(base.present, base.total, targetPercent, code, base.name);
-        // If safe with buffer > 0, we can bunk, else must attend
         const shouldAttend = advice.bunkImpact !== "safe";
         updated[getClassKey(item, idx)] = shouldAttend;
       }
@@ -231,7 +308,13 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     setPlanMap(updated);
   };
 
-  // Date range presets changer
+  // Date range handlers
+  const handleApplyCustomRange = () => {
+    if (!customStart || !customEnd) return;
+    setRangePreset("custom");
+    onRangeChange?.(customStart, customEnd);
+  };
+
   const handlePresetSelect = (preset: "current" | "next" | "twoWeeks" | "month") => {
     setRangePreset(preset);
     if (!onRangeChange) return;
@@ -243,30 +326,42 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
 
     const fmt = (d: Date) => d.toISOString().split("T")[0];
 
+    let start = "";
+    let end = "";
+
     if (preset === "current") {
       const sat = new Date(currentSunday);
       sat.setDate(currentSunday.getDate() + 6);
-      onRangeChange(fmt(currentSunday), fmt(sat));
+      start = fmt(currentSunday);
+      end = fmt(sat);
     } else if (preset === "next") {
       const nextSun = new Date(currentSunday);
       nextSun.setDate(currentSunday.getDate() + 7);
       const nextSat = new Date(nextSun);
       nextSat.setDate(nextSun.getDate() + 6);
-      onRangeChange(fmt(nextSun), fmt(nextSat));
+      start = fmt(nextSun);
+      end = fmt(nextSat);
     } else if (preset === "twoWeeks") {
       const sat = new Date(currentSunday);
       sat.setDate(currentSunday.getDate() + 13);
-      onRangeChange(fmt(currentSunday), fmt(sat));
+      start = fmt(currentSunday);
+      end = fmt(sat);
     } else if (preset === "month") {
       const monthEnd = new Date(currentSunday);
       monthEnd.setDate(currentSunday.getDate() + 27);
-      onRangeChange(fmt(currentSunday), fmt(monthEnd));
+      start = fmt(currentSunday);
+      end = fmt(monthEnd);
     }
+
+    setCustomStart(start);
+    setCustomEnd(end);
+    onRangeChange(start, end);
   };
 
-  // Export to ICS
   const handleExportICS = () => {
-    const icsContent = generateICS(schedule, `KIET Timetable (${targetPercent}% Goal)`);
+    // Only export non-holiday classes
+    const activeClasses = schedule.filter((c) => !isHoliday(c));
+    const icsContent = generateICS(activeClasses, `KIET Timetable (${targetPercent}% Goal)`);
     const blob = new Blob([icsContent], { type: "text/calendar;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -277,37 +372,23 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     link.remove();
   };
 
-  // Filter schedule classes
-  const filteredClasses = schedule.filter((item) => {
-    if (selectedCourseFilter !== "all" && item.courseCode !== selectedCourseFilter) {
-      return false;
-    }
-    if (selectedDayFilter !== "all") {
-      const rawDate = item.start?.split(" ")[0] || "";
-      if (!rawDate.toLowerCase().includes(selectedDayFilter.toLowerCase())) {
-        return false;
-      }
-    }
-    return true;
-  });
-
   return (
     <div className="space-y-6">
       {/* Top Banner & Target Slider */}
       <div className="p-6 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          {/* Target Title & Description */}
+          {/* Target Title */}
           <div className="max-w-xl">
             <div className="flex items-center gap-2">
               <span className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold">
                 <SlidersHorizontal className="w-4 h-4" />
               </span>
               <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-50">
-                Strategic Attendance Simulator
+                Attendance Planner & Bunk Simulator
               </h2>
             </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1.5 leading-relaxed">
-              Adjust your target attendance threshold below. Check or uncheck classes in your upcoming timetable to see exact subject-wise impacts, safe bunk allowances, and recovery days.
+              Select your timetable date range, mark official holidays (so they won&apos;t count), adjust your target percentage, and plan which classes you can safely miss.
             </p>
           </div>
 
@@ -322,7 +403,6 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
               </span>
             </div>
 
-            {/* Slider */}
             <input
               type="range"
               min={50}
@@ -333,7 +413,6 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
               className="w-full h-2 mt-3 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-indigo-600"
             />
 
-            {/* Preset Pills */}
             <div className="flex items-center justify-between gap-1 mt-2.5">
               {[60, 70, 75, 80, 85].map((preset) => (
                 <button
@@ -351,11 +430,89 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Date Selector & Presets */}
+        <div className="mt-6 pt-5 border-t border-zinc-100 dark:border-zinc-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          {/* Presets */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mr-1 flex items-center gap-1">
+              <CalendarIcon className="w-3.5 h-3.5" />
+              <span>Range:</span>
+            </span>
+            <div className="inline-flex rounded-lg p-1 bg-zinc-100 dark:bg-zinc-800 text-xs font-medium">
+              <button
+                onClick={() => handlePresetSelect("current")}
+                className={`px-2.5 py-1 rounded-md transition-all ${
+                  rangePreset === "current"
+                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
+                    : "text-zinc-600 dark:text-zinc-400"
+                }`}
+              >
+                This Week
+              </button>
+              <button
+                onClick={() => handlePresetSelect("next")}
+                className={`px-2.5 py-1 rounded-md transition-all ${
+                  rangePreset === "next"
+                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
+                    : "text-zinc-600 dark:text-zinc-400"
+                }`}
+              >
+                Next Week
+              </button>
+              <button
+                onClick={() => handlePresetSelect("twoWeeks")}
+                className={`px-2.5 py-1 rounded-md transition-all ${
+                  rangePreset === "twoWeeks"
+                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
+                    : "text-zinc-600 dark:text-zinc-400"
+                }`}
+              >
+                2 Weeks
+              </button>
+              <button
+                onClick={() => handlePresetSelect("month")}
+                className={`px-2.5 py-1 rounded-md transition-all ${
+                  rangePreset === "month"
+                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
+                    : "text-zinc-600 dark:text-zinc-400"
+                }`}
+              >
+                Month
+              </button>
+            </div>
+          </div>
+
+          {/* Custom Date Inputs */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-zinc-400">Custom:</span>
+            <input
+              type="date"
+              value={customStart}
+              onChange={(e) => setCustomStart(e.target.value)}
+              className="px-2.5 py-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs"
+            />
+            <ArrowRight className="w-3 h-3 text-zinc-400" />
+            <input
+              type="date"
+              value={customEnd}
+              onChange={(e) => setCustomEnd(e.target.value)}
+              className="px-2.5 py-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs"
+            />
+            <button
+              onClick={handleApplyCustomRange}
+              disabled={isLoading}
+              className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold transition-colors disabled:opacity-50 flex items-center gap-1 shadow-2xs"
+            >
+              {isLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Load</span>}
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* Primary KPI Projection Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {/* Overall Projected Metric */}
+      {/* KPI Stats Bar */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Projected Overall */}
         <div className="p-4 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
@@ -383,28 +540,31 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
           </div>
         </div>
 
-        {/* Planned Classes Split */}
+        {/* Planned Breakdown */}
         <div className="p-4 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
           <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
-            Simulated Actions
+            Simulated Classes
           </span>
           <div className="mt-2">
             <div className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-              {overallProjection.totalPlannedAttended} Attended
+              {overallProjection.totalPlannedAttended} Attending
             </div>
             <div className="text-xs font-semibold text-rose-600 dark:text-rose-400 mt-0.5">
               {overallProjection.totalPlannedBunks} Planned Bunks
             </div>
-            <div className="text-xs text-zinc-400 mt-1">
-              Across {overallProjection.totalUpcomingClasses} upcoming timetable slots
-            </div>
+            {holidayClassesCount > 0 && (
+              <div className="text-xs font-medium text-purple-600 dark:text-purple-400 mt-0.5 flex items-center gap-1">
+                <Palmtree className="w-3 h-3" />
+                <span>{holidayClassesCount} holiday classes omitted</span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Target Bunk Buffer */}
+        {/* Target Buffer */}
         <div className="p-4 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
           <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
-            {targetPercent}% Target Margin
+            {targetPercent}% Margin Buffer
           </span>
           <div className="mt-2">
             <div
@@ -426,7 +586,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
           </div>
         </div>
 
-        {/* Regular Days to Recovery */}
+        {/* Regular Recovery */}
         <div className="p-4 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-md shadow-indigo-500/10 flex flex-col justify-between">
           <div className="flex items-center gap-1 text-xs font-semibold text-indigo-100 uppercase tracking-wider">
             <TrendingUp className="w-3.5 h-3.5" />
@@ -447,7 +607,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
         </div>
       </div>
 
-      {/* Smart Bunk Advisor & Quick Strategy */}
+      {/* Smart Bunk Advisor & Actions */}
       <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
           <div className="flex items-center gap-2">
@@ -459,21 +619,32 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
                 Smart Bunk Advisor
               </h3>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                Algorithmic recommendation of which lectures have high attendance safety vs which are critical.
+                Algorithmic recommendation: skip high-buffer subjects and strictly protect borderline ones.
               </p>
             </div>
           </div>
 
-          <button
-            onClick={applyOptimalStrategy}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 transition-colors shadow-2xs self-start"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-            <span>Apply Optimal Bunk Strategy</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={applyOptimalStrategy}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 transition-colors shadow-2xs"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Apply Optimal Bunk Strategy</span>
+            </button>
+
+            <button
+              onClick={handleExportICS}
+              disabled={schedule.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors shadow-2xs disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export .ics</span>
+            </button>
+          </div>
         </div>
 
-        {/* Top 3 Bunk Recommendations Preview */}
+        {/* Top 3 Bunk Recommendations */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
           {smartBunkRecommendations.slice(0, 3).map((item, i) => {
             const isSafe = item.advice.bunkImpact === "safe";
@@ -524,7 +695,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
             </h3>
           </div>
           <span className="text-xs text-zinc-500 dark:text-zinc-400">
-            {subjectProjections.length} Enrolled Courses
+            {subjectProjections.length} Courses Tracked
           </span>
         </div>
 
@@ -606,210 +777,241 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
         </div>
       </div>
 
-      {/* Timetable Interactive Checklist */}
+      {/* Date-Grouped Class Checklist with Holiday Controls */}
       <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-xs space-y-4">
-        {/* Checklist Header & Date Range Selectors */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-zinc-100 dark:border-zinc-800 pb-4">
+        {/* Header & Global Bulk Actions */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
           <div>
             <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <span>Upcoming Class Checklist</span>
+              <CalendarIcon className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              <span>Timetable Checklist & Holiday Manager</span>
             </h3>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-              Uncheck lectures you plan to miss. Click 'Attend All' to reset.
+              Mark official college holidays so they don&apos;t count. Uncheck individual classes to simulate bunks.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Range Preset Buttons */}
-            <div className="inline-flex rounded-lg p-1 bg-zinc-100 dark:bg-zinc-800 text-xs font-medium">
-              <button
-                onClick={() => handlePresetSelect("current")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
-                  rangePreset === "current"
-                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
-                    : "text-zinc-600 dark:text-zinc-400"
-                }`}
-              >
-                This Week
-              </button>
-              <button
-                onClick={() => handlePresetSelect("next")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
-                  rangePreset === "next"
-                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
-                    : "text-zinc-600 dark:text-zinc-400"
-                }`}
-              >
-                Next Week
-              </button>
-              <button
-                onClick={() => handlePresetSelect("twoWeeks")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
-                  rangePreset === "twoWeeks"
-                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
-                    : "text-zinc-600 dark:text-zinc-400"
-                }`}
-              >
-                2 Weeks
-              </button>
-              <button
-                onClick={() => handlePresetSelect("month")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
-                  rangePreset === "month"
-                    ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
-                    : "text-zinc-600 dark:text-zinc-400"
-                }`}
-              >
-                Month
-              </button>
-            </div>
-
-            {/* ICS Export Button */}
-            <button
-              onClick={handleExportICS}
-              disabled={schedule.length === 0}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors shadow-2xs disabled:opacity-50"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Export .ics</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Filter Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-          {/* Quick Bulk Actions */}
-          <div className="flex items-center gap-2 font-medium">
+          <div className="flex items-center gap-2">
             <button
               onClick={() => markAll(true)}
-              className="px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 transition-colors"
+              className="px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold hover:bg-emerald-100 transition-colors"
             >
-              Attend All ({schedule.length})
+              Attend All
             </button>
             <button
               onClick={() => markAll(false)}
-              className="px-2.5 py-1 rounded-md bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-200 dark:border-rose-800 hover:bg-rose-100 transition-colors"
+              className="px-2.5 py-1 rounded-md bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-xs font-semibold hover:bg-rose-100 transition-colors"
             >
-              Miss All
+              Bunk All
             </button>
-          </div>
-
-          {/* Subject Filter */}
-          <div className="flex items-center gap-2">
-            <Filter className="w-3.5 h-3.5 text-zinc-400" />
-            <select
-              value={selectedCourseFilter}
-              onChange={(e) => setSelectedCourseFilter(e.target.value)}
-              className="px-2 py-1 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 text-xs"
-            >
-              <option value="all">All Subjects ({schedule.length})</option>
-              {Array.from(courseBaseMap.entries()).map(([code, base]) => (
-                <option key={code} value={code}>
-                  {code} - {base.name}
-                </option>
-              ))}
-            </select>
           </div>
         </div>
 
-        {/* Schedule Cards List */}
-        {filteredClasses.length === 0 ? (
-          <div className="p-10 text-center rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 text-zinc-500 text-xs">
-            No schedule classes found for this selection. Try changing filters or selecting a wider date range.
+        {/* Classes Grouped by Date */}
+        {classesByDate.length === 0 ? (
+          <div className="p-12 text-center rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 text-zinc-500 text-xs">
+            No schedule classes found for this date range. Try selecting another week or custom range above.
           </div>
         ) : (
-          <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
-            {filteredClasses.map((item, idx) => {
-              const attended = isClassAttended(item, idx);
-              const advice = smartBunkRecommendations.find(
-                (r) => r.courseCode === item.courseCode && r.start === item.start
-              )?.advice;
+          <div className="space-y-6">
+            {classesByDate.map(([dateKey, group]) => {
+              const isDayHoliday = holidayDates.has(dateKey);
+              const dayClasses = group.items.filter(({ item }) =>
+                selectedCourseFilter === "all" ? true : item.courseCode === selectedCourseFilter
+              );
+
+              if (dayClasses.length === 0) return null;
 
               return (
                 <div
-                  key={idx}
-                  onClick={() => toggleClass(item, idx)}
-                  className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
-                    attended
-                      ? "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 hover:border-indigo-400"
-                      : "bg-zinc-50 dark:bg-zinc-800/40 border-zinc-200/60 dark:border-zinc-800/60 opacity-60 line-through decoration-zinc-400"
+                  key={dateKey}
+                  className={`rounded-xl border transition-all overflow-hidden ${
+                    isDayHoliday
+                      ? "border-purple-200 dark:border-purple-900/50 bg-purple-50/20 dark:bg-purple-950/10"
+                      : "border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
                   }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleClass(item, idx);
-                      }}
-                      className={`p-1 rounded-md transition-colors ${
-                        attended
-                          ? "text-indigo-600 dark:text-indigo-400"
-                          : "text-zinc-400 dark:text-zinc-600"
-                      }`}
-                    >
-                      {attended ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
-                    </button>
-
-                    <div>
-                      <div className="font-bold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-                        <span>{item.courseName}</span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
-                          {item.courseCompName || "Class"}
+                  {/* Date Header & Holiday Action Bar */}
+                  <div
+                    className={`p-3 border-b flex flex-wrap items-center justify-between gap-3 text-xs ${
+                      isDayHoliday
+                        ? "bg-purple-50/80 dark:bg-purple-950/30 border-purple-200 dark:border-purple-900/40 text-purple-900 dark:text-purple-200"
+                        : "bg-zinc-50/80 dark:bg-zinc-800/40 border-zinc-100 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-zinc-900 dark:text-zinc-100">
+                        {group.rawDate}
+                      </span>
+                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                        ({dayClasses.length} {dayClasses.length === 1 ? "class" : "classes"})
+                      </span>
+                      {isDayHoliday && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-300">
+                          <Palmtree className="w-3 h-3" />
+                          <span>College Holiday</span>
                         </span>
-                      </div>
+                      )}
+                    </div>
 
-                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-indigo-500" />
-                          <span>
-                            {item.start?.split(" ")[1]?.slice(0, 5)} - {item.end?.split(" ")[1]?.slice(0, 5)}
-                          </span>
-                        </span>
-                        <span>•</span>
-                        <span>{item.start?.split(" ")[0]}</span>
-                        {item.content && (
-                          <>
-                            <span>•</span>
-                            <span className="flex items-center gap-1">
-                              <MapPin className="w-3 h-3 text-zinc-400" />
-                              <span>{item.content}</span>
-                            </span>
-                          </>
-                        )}
-                        {item.facultyName && (
-                          <>
-                            <span>•</span>
-                            <span>{item.facultyName}</span>
-                          </>
-                        )}
-                      </div>
+                    <div className="flex items-center gap-2">
+                      {/* Holiday Toggle Button */}
+                      <button
+                        onClick={() => toggleHolidayForDate(dateKey)}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                          isDayHoliday
+                            ? "bg-purple-600 text-white shadow-2xs hover:bg-purple-700"
+                            : "bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:border-purple-300"
+                        }`}
+                      >
+                        <Palmtree className="w-3 h-3" />
+                        <span>{isDayHoliday ? "Remove Holiday" : "Mark as Holiday"}</span>
+                      </button>
+
+                      {/* Day Bunk / Attend Actions if not holiday */}
+                      {!isDayHoliday && (
+                        <>
+                          <button
+                            onClick={() => markDay(dateKey, true)}
+                            className="text-[11px] text-emerald-600 dark:text-emerald-400 hover:underline font-semibold"
+                          >
+                            Attend Day
+                          </button>
+                          <span>•</span>
+                          <button
+                            onClick={() => markDay(dateKey, false)}
+                            className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline font-semibold"
+                          >
+                            Bunk Day
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    {advice && (
-                      <span
-                        className={`hidden sm:inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
-                          advice.bunkImpact === "safe"
-                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
-                            : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400"
-                        }`}
-                      >
-                        {advice.bunkImpact === "safe" ? "Safe Bunk" : "Must Attend"}
+                  {/* Holiday Message Banner */}
+                  {isDayHoliday && (
+                    <div className="px-4 py-2 bg-purple-50/60 dark:bg-purple-950/20 text-xs text-purple-700 dark:text-purple-300 flex items-center gap-1.5 border-b border-purple-100 dark:border-purple-900/30">
+                      <Palmtree className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        Classes on this day are marked as a holiday and <strong>will not count towards your total or attended lectures</strong>.
                       </span>
-                    )}
+                    </div>
+                  )}
 
-                    <span
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
-                        attended
-                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
-                          : "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
-                      }`}
-                    >
-                      {attended ? "Attending" : "Bunked"}
-                    </span>
+                  {/* Classes List */}
+                  <div className="p-3 space-y-2">
+                    {dayClasses.map(({ item, idx }) => {
+                      const attended = isClassAttended(item, idx);
+                      const advice = smartBunkRecommendations.find(
+                        (r) => r.courseCode === item.courseCode && r.start === item.start
+                      )?.advice;
+
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => toggleClass(item, idx)}
+                          className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                            isDayHoliday
+                              ? "bg-zinc-50/40 dark:bg-zinc-800/20 border-zinc-200/40 dark:border-zinc-800/40 opacity-50 cursor-not-allowed"
+                              : attended
+                              ? "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 hover:border-indigo-400 cursor-pointer"
+                              : "bg-zinc-50 dark:bg-zinc-800/40 border-zinc-200/60 dark:border-zinc-800/60 opacity-60 line-through decoration-zinc-400 cursor-pointer"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              disabled={isDayHoliday}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleClass(item, idx);
+                              }}
+                              className={`p-1 rounded-md transition-colors ${
+                                isDayHoliday
+                                  ? "text-zinc-300 dark:text-zinc-600"
+                                  : attended
+                                  ? "text-indigo-600 dark:text-indigo-400"
+                                  : "text-zinc-400 dark:text-zinc-600"
+                              }`}
+                            >
+                              {isDayHoliday ? (
+                                <CalendarOff className="w-4 h-4 text-purple-400" />
+                              ) : attended ? (
+                                <CheckSquare className="w-4 h-4" />
+                              ) : (
+                                <Square className="w-4 h-4" />
+                              )}
+                            </button>
+
+                            <div>
+                              <div className="font-bold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                                <span>{item.courseName}</span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
+                                  {item.courseCompName || "Class"}
+                                </span>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                                <span className="flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-indigo-500" />
+                                  <span>
+                                    {item.start?.split(" ")[1]?.slice(0, 5)} - {item.end?.split(" ")[1]?.slice(0, 5)}
+                                  </span>
+                                </span>
+                                {item.content && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="flex items-center gap-1">
+                                      <MapPin className="w-3 h-3 text-zinc-400" />
+                                      <span>{item.content}</span>
+                                    </span>
+                                  </>
+                                )}
+                                {item.facultyName && (
+                                  <>
+                                    <span>•</span>
+                                    <span>{item.facultyName}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isDayHoliday ? (
+                              <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-300">
+                                Holiday (0 periods)
+                              </span>
+                            ) : (
+                              <>
+                                {advice && (
+                                  <span
+                                    className={`hidden sm:inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                      advice.bunkImpact === "safe"
+                                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
+                                        : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400"
+                                    }`}
+                                  >
+                                    {advice.bunkImpact === "safe" ? "Safe Bunk" : "Must Attend"}
+                                  </span>
+                                )}
+
+                                <span
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
+                                    attended
+                                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                      : "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
+                                  }`}
+                                >
+                                  {attended ? "Attending" : "Bunked"}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
