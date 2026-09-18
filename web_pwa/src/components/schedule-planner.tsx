@@ -4,21 +4,24 @@ import React, { useState, useMemo } from "react";
 import {
   SlidersHorizontal,
   Download,
-  CheckSquare,
-  Square,
   Clock,
   MapPin,
   Sparkles,
-  Layers,
-  Zap,
-  TrendingUp,
-  Filter,
   Calendar as CalendarIcon,
-  Sun,
   Palmtree,
   CalendarOff,
   ArrowRight,
   RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  ShieldCheck,
+  ShieldAlert,
+  Layers,
+  Check,
+  X,
+  CalendarDays,
+  Flame,
+  Info,
 } from "lucide-react";
 import { ScheduleClassItem, AttendanceCourseItem } from "@/lib/types";
 import {
@@ -47,7 +50,16 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   // Target percentage (default 75%)
   const [targetPercent, setTargetPercent] = useState<number>(75);
 
-  // Custom Date Range State
+  // Active view tab: "timetable" (checklist) vs "subjects" (deep dive impact)
+  const [activeTab, setActiveTab] = useState<"timetable" | "subjects">("timetable");
+
+  // Selected day filter in Day Strip: "all" or specific normalized date key (e.g. "2026-09-14")
+  const [selectedDayKey, setSelectedDayKey] = useState<string>("all");
+
+  // Date range state
+  const [rangePreset, setRangePreset] = useState<"current" | "next" | "twoWeeks" | "month" | "custom">("current");
+  const [showCustomDateModal, setShowCustomDateModal] = useState(false);
+
   const [customStart, setCustomStart] = useState<string>(() => {
     const now = new Date();
     const day = now.getDay();
@@ -64,15 +76,10 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     return saturday.toISOString().split("T")[0];
   });
 
-  const [rangePreset, setRangePreset] = useState<"current" | "next" | "twoWeeks" | "month" | "custom">("current");
-
-  // Subject and Day Filter
-  const [selectedCourseFilter, setSelectedCourseFilter] = useState<string>("all");
-
   // Interactive plan state: class unique key -> boolean (true = attend, false = bunk)
   const [planMap, setPlanMap] = useState<{ [key: string]: boolean }>({});
 
-  // Holiday dates state: Set of date keys (normalized YYYY-MM-DD or DD/MM/YYYY)
+  // Holiday dates state: Set of date keys (normalized YYYY-MM-DD)
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
 
   // Helper to normalize any date string to YYYY-MM-DD for consistent key comparison
@@ -112,11 +119,10 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     return planMap[key] !== undefined ? planMap[key] : true;
   };
 
-  const toggleClass = (item: ScheduleClassItem, idx: number) => {
-    if (isHoliday(item)) return; // Holidays are non-interactive
+  const setClassAttendance = (item: ScheduleClassItem, idx: number, attend: boolean) => {
+    if (isHoliday(item)) return;
     const key = getClassKey(item, idx);
-    const currentVal = isClassAttended(item, idx);
-    setPlanMap((prev) => ({ ...prev, [key]: !currentVal }));
+    setPlanMap((prev) => ({ ...prev, [key]: attend }));
   };
 
   const markAll = (attend: boolean) => {
@@ -165,7 +171,6 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     let holidaysCount = 0;
 
     schedule.forEach((item, idx) => {
-      // If day is marked as Holiday, skip completely from attendance math!
       if (isHoliday(item)) {
         holidaysCount += 1;
         return;
@@ -259,15 +264,41 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     };
   }, [schedule, courseBaseMap, planMap, holidayDates, targetPercent]);
 
-  // Group classes by Date for clean UI
+  // Group classes by Date
   const classesByDate = useMemo(() => {
-    const groups: { [dateKey: string]: { rawDate: string; items: { item: ScheduleClassItem; idx: number }[] } } = {};
+    const groups: {
+      [dateKey: string]: {
+        dateKey: string;
+        rawDate: string;
+        dayName: string;
+        shortDate: string;
+        items: { item: ScheduleClassItem; idx: number }[];
+      };
+    } = {};
 
     schedule.forEach((item, idx) => {
       const dateKey = normalizeDate(item.start);
       if (!groups[dateKey]) {
+        const rawDate = item.start?.split(" ")[0] || dateKey;
+        // Parse Day of Week (e.g. Mon, Tue)
+        let dayName = "";
+        let shortDate = rawDate;
+        try {
+          const parts = rawDate.split("/");
+          if (parts.length === 3) {
+            const d = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+            dayName = d.toLocaleDateString("en-US", { weekday: "short" });
+            shortDate = `${parts[0]} ${d.toLocaleDateString("en-US", { month: "short" })}`;
+          }
+        } catch {
+          dayName = "";
+        }
+
         groups[dateKey] = {
-          rawDate: item.start?.split(" ")[0] || dateKey,
+          dateKey,
+          rawDate,
+          dayName: dayName || "Day",
+          shortDate,
           items: [],
         };
       }
@@ -277,11 +308,11 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
   }, [schedule]);
 
-  // Smart Bunk Advisor list
+  // Smart Bunk Recommendations
   const smartBunkRecommendations = useMemo(() => {
     const list: (ScheduleClassItem & { advice: any; index: number })[] = [];
     schedule.forEach((item, idx) => {
-      if (isHoliday(item)) return; // Holidays don't need bunk advice
+      if (isHoliday(item)) return;
       const code = item.courseCode;
       const base = courseBaseMap.get(code);
       if (base) {
@@ -292,7 +323,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     return list;
   }, [schedule, courseBaseMap, holidayDates, targetPercent]);
 
-  // Optimal Bunk Strategy
+  // Apply one-click "Optimal Bunk Strategy"
   const applyOptimalStrategy = () => {
     const updated = { ...planMap };
     schedule.forEach((item, idx) => {
@@ -312,6 +343,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   const handleApplyCustomRange = () => {
     if (!customStart || !customEnd) return;
     setRangePreset("custom");
+    setShowCustomDateModal(false);
     onRangeChange?.(customStart, customEnd);
   };
 
@@ -359,7 +391,6 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   };
 
   const handleExportICS = () => {
-    // Only export non-holiday classes
     const activeClasses = schedule.filter((c) => !isHoliday(c));
     const icsContent = generateICS(activeClasses, `KIET Timetable (${targetPercent}% Goal)`);
     const blob = new Blob([icsContent], { type: "text/calendar;charset=utf-8" });
@@ -372,77 +403,45 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     link.remove();
   };
 
+  // Filtered date groups according to selected day strip
+  const visibleDateGroups = useMemo(() => {
+    if (selectedDayKey === "all") return classesByDate;
+    return classesByDate.filter(([dateKey]) => dateKey === selectedDayKey);
+  }, [classesByDate, selectedDayKey]);
+
+  const isSafeProjected = overallProjection.projectedPercentage >= targetPercent;
+
   return (
     <div className="space-y-6">
-      {/* Top Banner & Target Slider */}
-      <div className="p-6 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          {/* Target Title */}
-          <div className="max-w-xl">
-            <div className="flex items-center gap-2">
-              <span className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold">
-                <SlidersHorizontal className="w-4 h-4" />
-              </span>
-              <h2 className="text-lg font-bold text-zinc-900 dark:text-zinc-50">
-                Attendance Planner & Bunk Simulator
-              </h2>
-            </div>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1.5 leading-relaxed">
-              Select your timetable date range, mark official holidays (so they won&apos;t count), adjust your target percentage, and plan which classes you can safely miss.
-            </p>
-          </div>
-
-          {/* Target Percentage Control */}
-          <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200/80 dark:border-zinc-700/60 min-w-[280px]">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-400">
-                Target Threshold
-              </span>
-              <span className="text-xl font-extrabold text-indigo-600 dark:text-indigo-400">
-                {targetPercent}%
-              </span>
-            </div>
-
-            <input
-              type="range"
-              min={50}
-              max={95}
-              step={1}
-              value={targetPercent}
-              onChange={(e) => setTargetPercent(Number(e.target.value))}
-              className="w-full h-2 mt-3 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-            />
-
-            <div className="flex items-center justify-between gap-1 mt-2.5">
+      {/* 1. Sleek Simulator Bar */}
+      <div className="rounded-2xl border border-zinc-200/80 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md p-5 shadow-sm">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+          {/* Target Selector */}
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              Target Goal
+            </span>
+            <div className="inline-flex rounded-xl p-1 bg-zinc-100 dark:bg-zinc-800 text-xs font-semibold">
               {[60, 70, 75, 80, 85].map((preset) => (
                 <button
                   key={preset}
                   onClick={() => setTargetPercent(preset)}
-                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-all ${
+                  className={`px-3 py-1 rounded-lg transition-all ${
                     targetPercent === preset
-                      ? "bg-indigo-600 text-white shadow-xs"
-                      : "bg-white dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700"
+                      ? "bg-white dark:bg-zinc-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold"
+                      : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                   }`}
                 >
                   {preset}%
                 </button>
               ))}
             </div>
-          </div>
-        </div>
 
-        {/* Date Selector & Presets */}
-        <div className="mt-6 pt-5 border-t border-zinc-100 dark:border-zinc-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          {/* Presets */}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 mr-1 flex items-center gap-1">
-              <CalendarIcon className="w-3.5 h-3.5" />
-              <span>Range:</span>
-            </span>
-            <div className="inline-flex rounded-lg p-1 bg-zinc-100 dark:bg-zinc-800 text-xs font-medium">
+            {/* Date Range Selector */}
+            <div className="inline-flex rounded-xl p-1 bg-zinc-100 dark:bg-zinc-800 text-xs font-medium">
               <button
                 onClick={() => handlePresetSelect("current")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
+                className={`px-2.5 py-1 rounded-lg transition-all ${
                   rangePreset === "current"
                     ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
                     : "text-zinc-600 dark:text-zinc-400"
@@ -452,7 +451,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
               </button>
               <button
                 onClick={() => handlePresetSelect("next")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
+                className={`px-2.5 py-1 rounded-lg transition-all ${
                   rangePreset === "next"
                     ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
                     : "text-zinc-600 dark:text-zinc-400"
@@ -462,7 +461,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
               </button>
               <button
                 onClick={() => handlePresetSelect("twoWeeks")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
+                className={`px-2.5 py-1 rounded-lg transition-all ${
                   rangePreset === "twoWeeks"
                     ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
                     : "text-zinc-600 dark:text-zinc-400"
@@ -472,7 +471,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
               </button>
               <button
                 onClick={() => handlePresetSelect("month")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
+                className={`px-2.5 py-1 rounded-lg transition-all ${
                   rangePreset === "month"
                     ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs font-bold"
                     : "text-zinc-600 dark:text-zinc-400"
@@ -480,545 +479,564 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
               >
                 Month
               </button>
+              <button
+                onClick={() => setShowCustomDateModal(!showCustomDateModal)}
+                className={`px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 ${
+                  rangePreset === "custom"
+                    ? "bg-indigo-600 text-white shadow-xs font-bold"
+                    : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900"
+                }`}
+              >
+                <CalendarIcon className="w-3 h-3" />
+                <span>Custom</span>
+              </button>
             </div>
           </div>
 
-          {/* Custom Date Inputs */}
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-zinc-400">Custom:</span>
+          {/* Quick Actions */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={applyOptimalStrategy}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-sm shadow-indigo-500/20 hover:opacity-95 transition-all"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Auto-Optimize Bunks</span>
+            </button>
+
+            <button
+              onClick={handleExportICS}
+              disabled={schedule.length === 0}
+              className="p-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors shadow-2xs disabled:opacity-40"
+              title="Export to Calendar (.ics)"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Custom Date Inputs Dropdown */}
+        {showCustomDateModal && (
+          <div className="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-800 flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-200">
+            <span className="font-semibold text-zinc-600 dark:text-zinc-300">Choose Custom Date Range:</span>
             <input
               type="date"
               value={customStart}
               onChange={(e) => setCustomStart(e.target.value)}
-              className="px-2.5 py-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs"
+              className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs focus:ring-1 focus:ring-indigo-500"
             />
             <ArrowRight className="w-3 h-3 text-zinc-400" />
             <input
               type="date"
               value={customEnd}
               onChange={(e) => setCustomEnd(e.target.value)}
-              className="px-2.5 py-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs"
+              className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs focus:ring-1 focus:ring-indigo-500"
             />
             <button
               onClick={handleApplyCustomRange}
               disabled={isLoading}
-              className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold transition-colors disabled:opacity-50 flex items-center gap-1 shadow-2xs"
+              className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold transition-colors disabled:opacity-50"
             >
-              {isLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <span>Load</span>}
+              {isLoading ? "Loading..." : "Apply Range"}
             </button>
           </div>
-        </div>
-      </div>
+        )}
 
-      {/* KPI Stats Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Projected Overall */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
-              Projected Overall
-            </span>
-            <span
-              className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                overallProjection.projectedPercentage >= targetPercent
-                  ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
-                  : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400"
-              }`}
-            >
-              {overallProjection.percentageDelta >= 0
-                ? `+${overallProjection.percentageDelta}%`
-                : `${overallProjection.percentageDelta}%`}
-            </span>
-          </div>
-          <div className="mt-2">
-            <div className="text-3xl font-extrabold text-zinc-900 dark:text-zinc-100">
-              {overallProjection.projectedPercentage}%
+        {/* Live Simulation Metric Strip */}
+        <div className="mt-5 pt-5 border-t border-zinc-100 dark:border-zinc-800 grid grid-cols-2 sm:grid-cols-4 gap-4 items-center">
+          {/* Current -> Projected Score */}
+          <div>
+            <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+              Projected Attendance
             </div>
-            <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-              Currently {overallProjection.currentPercentage}% ({overallProjection.projectedPresent}/{overallProjection.projectedTotal} classes)
-            </div>
-          </div>
-        </div>
-
-        {/* Planned Breakdown */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
-          <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
-            Simulated Classes
-          </span>
-          <div className="mt-2">
-            <div className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">
-              {overallProjection.totalPlannedAttended} Attending
-            </div>
-            <div className="text-xs font-semibold text-rose-600 dark:text-rose-400 mt-0.5">
-              {overallProjection.totalPlannedBunks} Planned Bunks
-            </div>
-            {holidayClassesCount > 0 && (
-              <div className="text-xs font-medium text-purple-600 dark:text-purple-400 mt-0.5 flex items-center gap-1">
-                <Palmtree className="w-3 h-3" />
-                <span>{holidayClassesCount} holiday classes omitted</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Target Buffer */}
-        <div className="p-4 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
-          <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
-            {targetPercent}% Margin Buffer
-          </span>
-          <div className="mt-2">
-            <div
-              className={`text-2xl font-bold ${
-                overallProjection.projectedPercentage >= targetPercent
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-rose-600 dark:text-rose-400"
-              }`}
-            >
-              {overallProjection.projectedPercentage >= targetPercent
-                ? `${overallProjection.safeBunksAtTarget} Safe Bunks`
-                : `${overallProjection.classesNeededAtTarget} Classes Needed`}
-            </div>
-            <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-              {overallProjection.projectedPercentage >= targetPercent
-                ? `Buffer left without dropping below ${targetPercent}%`
-                : `Consecutive classes to reach ${targetPercent}%`}
-            </div>
-          </div>
-        </div>
-
-        {/* Regular Recovery */}
-        <div className="p-4 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-md shadow-indigo-500/10 flex flex-col justify-between">
-          <div className="flex items-center gap-1 text-xs font-semibold text-indigo-100 uppercase tracking-wider">
-            <TrendingUp className="w-3.5 h-3.5" />
-            <span>Regular Recovery</span>
-          </div>
-          <div className="mt-2">
-            <div className="text-3xl font-black">
-              {overallProjection.projectedPercentage >= targetPercent
-                ? "Safe!"
-                : `~${overallProjection.daysToRecover} Days`}
-            </div>
-            <div className="text-xs text-indigo-100 mt-1">
-              {overallProjection.projectedPercentage >= targetPercent
-                ? `You meet your ${targetPercent}% goal comfortably.`
-                : `Attend every class for ~${overallProjection.daysToRecover} days to restore ${targetPercent}%.`}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Smart Bunk Advisor & Actions */}
-      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
-              <Zap className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-                Smart Bunk Advisor
-              </h3>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                Algorithmic recommendation: skip high-buffer subjects and strictly protect borderline ones.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={applyOptimalStrategy}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 transition-colors shadow-2xs"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-              <span>Apply Optimal Bunk Strategy</span>
-            </button>
-
-            <button
-              onClick={handleExportICS}
-              disabled={schedule.length === 0}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors shadow-2xs disabled:opacity-50"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Export .ics</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Top 3 Bunk Recommendations */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4">
-          {smartBunkRecommendations.slice(0, 3).map((item, i) => {
-            const isSafe = item.advice.bunkImpact === "safe";
-            return (
-              <div
-                key={i}
-                className={`p-3 rounded-xl border text-xs flex flex-col justify-between ${
-                  isSafe
-                    ? "bg-emerald-50/40 border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900/40"
-                    : "bg-rose-50/40 border-rose-200 dark:bg-rose-950/20 dark:border-rose-900/40"
+            <div className="flex items-baseline gap-2 mt-0.5">
+              <span className="text-2xl sm:text-3xl font-black text-zinc-900 dark:text-zinc-100">
+                {overallProjection.projectedPercentage}%
+              </span>
+              <span
+                className={`text-xs font-bold ${
+                  overallProjection.percentageDelta >= 0 ? "text-emerald-600" : "text-rose-600"
                 }`}
               >
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-zinc-900 dark:text-zinc-100 line-clamp-1">
-                      {item.courseName}
-                    </span>
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        isSafe
-                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300"
-                          : "bg-rose-100 text-rose-800 dark:bg-rose-900/60 dark:text-rose-300"
-                      }`}
-                    >
-                      {isSafe ? "Safe Bunk" : "Must Attend"}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
-                    {item.start?.split(" ")[0]} • {item.start?.split(" ")[1]?.slice(0, 5)}
-                  </div>
-                  <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mt-1.5 leading-snug">
-                    {item.advice.adviceMessage}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Subject-Wise Projected Impact Table */}
-      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden shadow-xs">
-        <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 uppercase tracking-wider">
-              Subject-Wise Projection Breakdown ({targetPercent}% Target)
-            </h3>
+                {overallProjection.percentageDelta >= 0
+                  ? `+${overallProjection.percentageDelta}%`
+                  : `${overallProjection.percentageDelta}%`}
+              </span>
+            </div>
+            <div className="text-[11px] text-zinc-400 mt-0.5">
+              From {overallProjection.currentPercentage}% current
+            </div>
           </div>
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-            {subjectProjections.length} Courses Tracked
-          </span>
-        </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-zinc-50 dark:bg-zinc-800/20 text-zinc-500 dark:text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-100 dark:border-zinc-800">
-              <tr>
-                <th className="py-3 px-4">Subject</th>
-                <th className="py-3 px-4">Current %</th>
-                <th className="py-3 px-4">Planned Bunks</th>
-                <th className="py-3 px-4">Projected %</th>
-                <th className="py-3 px-4">Delta</th>
-                <th className="py-3 px-4">Buffer / Deficit at {targetPercent}%</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {subjectProjections.map((sub) => {
-                const isSafe = sub.projectedPercentage >= targetPercent;
-                return (
-                  <tr key={sub.courseCode} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/30 transition-colors">
-                    <td className="py-3 px-4">
-                      <div className="font-bold text-zinc-900 dark:text-zinc-100">
-                        {sub.courseName}
-                      </div>
-                      <span className="font-mono text-[10px] text-zinc-400">
-                        {sub.courseCode}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 font-semibold text-zinc-700 dark:text-zinc-300">
-                      {sub.currentPercentage}%
-                      <div className="text-[10px] text-zinc-400 font-normal">
-                        ({sub.currentPresent}/{sub.currentTotal})
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      {sub.plannedBunked > 0 ? (
-                        <span className="font-bold text-rose-600 dark:text-rose-400">
-                          {sub.plannedBunked} classes
-                        </span>
-                      ) : (
-                        <span className="text-zinc-400">0</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 font-bold text-zinc-900 dark:text-zinc-100 text-sm">
-                      {sub.projectedPercentage}%
-                      <div className="text-[10px] text-zinc-400 font-normal">
-                        ({sub.projectedPresent}/{sub.projectedTotal})
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 font-semibold">
-                      <span
-                        className={
-                          sub.percentageDelta >= 0
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : "text-rose-600 dark:text-rose-400"
-                        }
-                      >
-                        {sub.percentageDelta >= 0 ? `+${sub.percentageDelta}%` : `${sub.percentageDelta}%`}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold ${
-                          isSafe
-                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
-                            : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400"
-                        }`}
-                      >
-                        {isSafe
-                          ? `${sub.safeBunks} safe bunks`
-                          : `Need ${sub.classesNeeded} classes`}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Date-Grouped Class Checklist with Holiday Controls */}
-      <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-xs space-y-4">
-        {/* Header & Global Bulk Actions */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
+          {/* Goal Verdict */}
           <div>
-            <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
-              <CalendarIcon className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <span>Timetable Checklist & Holiday Manager</span>
-            </h3>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-              Mark official college holidays so they don&apos;t count. Uncheck individual classes to simulate bunks.
-            </p>
+            <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+              {targetPercent}% Target Status
+            </div>
+            <div className="mt-0.5">
+              <span
+                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold ${
+                  isSafeProjected
+                    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800"
+                    : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
+                }`}
+              >
+                {isSafeProjected ? <ShieldCheck className="w-3.5 h-3.5" /> : <ShieldAlert className="w-3.5 h-3.5" />}
+                <span>
+                  {isSafeProjected
+                    ? `${overallProjection.safeBunksAtTarget} Bunks Safe`
+                    : `Need ${overallProjection.classesNeededAtTarget} Classes`}
+                </span>
+              </span>
+            </div>
+            <div className="text-[11px] text-zinc-400 mt-1">
+              {isSafeProjected ? "Above target threshold" : "Below required attendance"}
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => markAll(true)}
-              className="px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-xs font-semibold hover:bg-emerald-100 transition-colors"
-            >
-              Attend All
-            </button>
-            <button
-              onClick={() => markAll(false)}
-              className="px-2.5 py-1 rounded-md bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-200 dark:border-rose-800 text-xs font-semibold hover:bg-rose-100 transition-colors"
-            >
-              Bunk All
-            </button>
+          {/* Classes Breakdown */}
+          <div>
+            <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+              Classes Simulated
+            </div>
+            <div className="text-sm font-bold text-zinc-800 dark:text-zinc-200 mt-1 flex items-center gap-2">
+              <span className="text-emerald-600">{overallProjection.totalPlannedAttended} Attending</span>
+              <span>•</span>
+              <span className="text-rose-600">{overallProjection.totalPlannedBunks} Bunked</span>
+            </div>
+            <div className="text-[11px] text-zinc-400 mt-0.5">
+              {holidayClassesCount > 0 ? `${holidayClassesCount} holiday classes omitted` : "No holidays in range"}
+            </div>
+          </div>
+
+          {/* Streak Recovery */}
+          <div>
+            <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+              Attendance Recovery
+            </div>
+            <div className="text-sm font-bold text-indigo-600 dark:text-indigo-400 mt-1 flex items-center gap-1">
+              <Flame className="w-4 h-4 text-amber-500" />
+              <span>
+                {isSafeProjected ? "On Track!" : `~${overallProjection.daysToRecover} Days Streak`}
+              </span>
+            </div>
+            <div className="text-[11px] text-zinc-400 mt-0.5">
+              {isSafeProjected ? "100% compliant with goal" : "Go to class regularly to hit goal"}
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Classes Grouped by Date */}
-        {classesByDate.length === 0 ? (
-          <div className="p-12 text-center rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800 text-zinc-500 text-xs">
-            No schedule classes found for this date range. Try selecting another week or custom range above.
-          </div>
-        ) : (
-          <div className="space-y-6">
+      {/* 2. Planner Mode Tabs */}
+      <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setActiveTab("timetable")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
+              activeTab === "timetable"
+                ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 shadow-xs"
+                : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+            }`}
+          >
+            <CalendarDays className="w-4 h-4" />
+            <span>Interactive Timetable Checklist</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("subjects")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
+              activeTab === "subjects"
+                ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 shadow-xs"
+                : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            <span>Subject Projections ({subjectProjections.length})</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs font-semibold">
+          <button
+            onClick={() => markAll(true)}
+            className="text-emerald-600 dark:text-emerald-400 hover:underline"
+          >
+            Attend All
+          </button>
+          <span className="text-zinc-300 dark:text-zinc-700">•</span>
+          <button
+            onClick={() => markAll(false)}
+            className="text-rose-600 dark:text-rose-400 hover:underline"
+          >
+            Bunk All
+          </button>
+        </div>
+      </div>
+
+      {/* 3. TAB A: Sophisticated Timetable Checklist */}
+      {activeTab === "timetable" && (
+        <div className="space-y-5">
+          {/* Day Strip (Horizontal Weekday Selector) */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+            <button
+              onClick={() => setSelectedDayKey("all")}
+              className={`px-3 py-2 rounded-xl text-xs font-semibold shrink-0 transition-all ${
+                selectedDayKey === "all"
+                  ? "bg-indigo-600 text-white shadow-xs font-bold"
+                  : "bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:border-indigo-300"
+              }`}
+            >
+              All Days ({classesByDate.length})
+            </button>
+
             {classesByDate.map(([dateKey, group]) => {
+              const isSelected = selectedDayKey === dateKey;
               const isDayHoliday = holidayDates.has(dateKey);
-              const dayClasses = group.items.filter(({ item }) =>
-                selectedCourseFilter === "all" ? true : item.courseCode === selectedCourseFilter
-              );
-
-              if (dayClasses.length === 0) return null;
+              let attendedCount = 0;
+              group.items.forEach(({ item, idx }) => {
+                if (isClassAttended(item, idx)) attendedCount++;
+              });
 
               return (
-                <div
+                <button
                   key={dateKey}
-                  className={`rounded-xl border transition-all overflow-hidden ${
-                    isDayHoliday
-                      ? "border-purple-200 dark:border-purple-900/50 bg-purple-50/20 dark:bg-purple-950/10"
-                      : "border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
+                  onClick={() => setSelectedDayKey(dateKey)}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-medium shrink-0 transition-all flex items-center gap-2 ${
+                    isSelected
+                      ? "bg-indigo-600 text-white shadow-xs font-bold"
+                      : isDayHoliday
+                      ? "bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-800 dark:text-purple-300"
+                      : "bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:border-zinc-300"
                   }`}
                 >
-                  {/* Date Header & Holiday Action Bar */}
-                  <div
-                    className={`p-3 border-b flex flex-wrap items-center justify-between gap-3 text-xs ${
-                      isDayHoliday
-                        ? "bg-purple-50/80 dark:bg-purple-950/30 border-purple-200 dark:border-purple-900/40 text-purple-900 dark:text-purple-200"
-                        : "bg-zinc-50/80 dark:bg-zinc-800/40 border-zinc-100 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm text-zinc-900 dark:text-zinc-100">
-                        {group.rawDate}
-                      </span>
-                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                        ({dayClasses.length} {dayClasses.length === 1 ? "class" : "classes"})
-                      </span>
-                      {isDayHoliday && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-300">
-                          <Palmtree className="w-3 h-3" />
-                          <span>College Holiday</span>
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {/* Holiday Toggle Button */}
-                      <button
-                        onClick={() => toggleHolidayForDate(dateKey)}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
-                          isDayHoliday
-                            ? "bg-purple-600 text-white shadow-2xs hover:bg-purple-700"
-                            : "bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:border-purple-300"
-                        }`}
-                      >
-                        <Palmtree className="w-3 h-3" />
-                        <span>{isDayHoliday ? "Remove Holiday" : "Mark as Holiday"}</span>
-                      </button>
-
-                      {/* Day Bunk / Attend Actions if not holiday */}
-                      {!isDayHoliday && (
-                        <>
-                          <button
-                            onClick={() => markDay(dateKey, true)}
-                            className="text-[11px] text-emerald-600 dark:text-emerald-400 hover:underline font-semibold"
-                          >
-                            Attend Day
-                          </button>
-                          <span>•</span>
-                          <button
-                            onClick={() => markDay(dateKey, false)}
-                            className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline font-semibold"
-                          >
-                            Bunk Day
-                          </button>
-                        </>
-                      )}
-                    </div>
+                  <div>
+                    <span className="font-bold uppercase tracking-wider text-[10px] block opacity-80">
+                      {group.dayName}
+                    </span>
+                    <span className="text-xs font-semibold">{group.shortDate}</span>
                   </div>
 
-                  {/* Holiday Message Banner */}
-                  {isDayHoliday && (
-                    <div className="px-4 py-2 bg-purple-50/60 dark:bg-purple-950/20 text-xs text-purple-700 dark:text-purple-300 flex items-center gap-1.5 border-b border-purple-100 dark:border-purple-900/30">
-                      <Palmtree className="w-3.5 h-3.5 shrink-0" />
-                      <span>
-                        Classes on this day are marked as a holiday and <strong>will not count towards your total or attended lectures</strong>.
-                      </span>
-                    </div>
+                  {isDayHoliday ? (
+                    <Palmtree className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                  ) : (
+                    <span
+                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                        isSelected
+                          ? "bg-indigo-700/60 text-white"
+                          : attendedCount === group.items.length
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300"
+                          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                      }`}
+                    >
+                      {attendedCount}/{group.items.length}
+                    </span>
                   )}
+                </button>
+              );
+            })}
+          </div>
 
-                  {/* Classes List */}
-                  <div className="p-3 space-y-2">
-                    {dayClasses.map(({ item, idx }) => {
-                      const attended = isClassAttended(item, idx);
-                      const advice = smartBunkRecommendations.find(
-                        (r) => r.courseCode === item.courseCode && r.start === item.start
-                      )?.advice;
+          {/* Classes List for Active Selection */}
+          {visibleDateGroups.length === 0 ? (
+            <div className="p-12 text-center rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 text-zinc-400 text-xs">
+              No classes scheduled for this date range. Try switching to &quot;All Days&quot; or expanding your date range.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {visibleDateGroups.map(([dateKey, group]) => {
+                const isDayHoliday = holidayDates.has(dateKey);
 
-                      return (
+                return (
+                  <div
+                    key={dateKey}
+                    className={`rounded-2xl border transition-all overflow-hidden shadow-2xs ${
+                      isDayHoliday
+                        ? "border-purple-200/80 dark:border-purple-900/40 bg-purple-50/20 dark:bg-purple-950/10"
+                        : "border-zinc-200/80 dark:border-zinc-800 bg-white dark:bg-zinc-900"
+                    }`}
+                  >
+                    {/* Modern Date Header Card */}
+                    <div
+                      className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3 text-xs ${
+                        isDayHoliday
+                          ? "bg-purple-50/80 dark:bg-purple-950/30 border-purple-200 dark:border-purple-900/40 text-purple-900 dark:text-purple-200"
+                          : "bg-zinc-50/80 dark:bg-zinc-800/40 border-zinc-100 dark:border-zinc-800"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
                         <div
-                          key={idx}
-                          onClick={() => toggleClass(item, idx)}
-                          className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                          className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
                             isDayHoliday
-                              ? "bg-zinc-50/40 dark:bg-zinc-800/20 border-zinc-200/40 dark:border-zinc-800/40 opacity-50 cursor-not-allowed"
-                              : attended
-                              ? "bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 hover:border-indigo-400 cursor-pointer"
-                              : "bg-zinc-50 dark:bg-zinc-800/40 border-zinc-200/60 dark:border-zinc-800/60 opacity-60 line-through decoration-zinc-400 cursor-pointer"
+                              ? "bg-purple-200 text-purple-800 dark:bg-purple-900 dark:text-purple-200"
+                              : "bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-200"
                           }`}
                         >
-                          <div className="flex items-center gap-3">
-                            <button
-                              type="button"
-                              disabled={isDayHoliday}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleClass(item, idx);
-                              }}
-                              className={`p-1 rounded-md transition-colors ${
-                                isDayHoliday
-                                  ? "text-zinc-300 dark:text-zinc-600"
-                                  : attended
-                                  ? "text-indigo-600 dark:text-indigo-400"
-                                  : "text-zinc-400 dark:text-zinc-600"
-                              }`}
-                            >
-                              {isDayHoliday ? (
-                                <CalendarOff className="w-4 h-4 text-purple-400" />
-                              ) : attended ? (
-                                <CheckSquare className="w-4 h-4" />
-                              ) : (
-                                <Square className="w-4 h-4" />
-                              )}
-                            </button>
+                          {group.dayName.slice(0, 2)}
+                        </div>
+                        <div>
+                          <span className="font-bold text-sm text-zinc-900 dark:text-zinc-100">
+                            {group.rawDate}
+                          </span>
+                          <span className="text-zinc-400 ml-2 font-normal">
+                            ({group.items.length} lectures)
+                          </span>
+                        </div>
+                      </div>
 
-                            <div>
-                              <div className="font-bold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-                                <span>{item.courseName}</span>
-                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
-                                  {item.courseCompName || "Class"}
-                                </span>
+                      {/* Day Action Buttons */}
+                      <div className="flex items-center gap-2">
+                        {/* Holiday Toggle Button */}
+                        <button
+                          onClick={() => toggleHolidayForDate(dateKey)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                            isDayHoliday
+                              ? "bg-purple-600 text-white hover:bg-purple-700 shadow-2xs"
+                              : "bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:border-purple-300"
+                          }`}
+                        >
+                          <Palmtree className="w-3.5 h-3.5" />
+                          <span>{isDayHoliday ? "Holiday Enabled" : "Mark Holiday"}</span>
+                        </button>
+
+                        {!isDayHoliday && (
+                          <div className="flex items-center gap-1.5 pl-2 border-l border-zinc-200 dark:border-zinc-700 text-[11px] font-semibold">
+                            <button
+                              onClick={() => markDay(dateKey, true)}
+                              className="px-2 py-0.5 rounded text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                            >
+                              Attend Day
+                            </button>
+                            <button
+                              onClick={() => markDay(dateKey, false)}
+                              className="px-2 py-0.5 rounded text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                            >
+                              Bunk Day
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Holiday Notification Message */}
+                    {isDayHoliday && (
+                      <div className="px-4 py-2 bg-purple-50/60 dark:bg-purple-950/30 text-xs text-purple-800 dark:text-purple-300 flex items-center gap-2 border-b border-purple-100 dark:border-purple-900/30">
+                        <Palmtree className="w-4 h-4 text-purple-600 shrink-0" />
+                        <span>
+                          <strong>Declared Holiday:</strong> All {group.items.length} lectures on this date are excluded from calculations and won&apos;t affect your percentage.
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Classes Modern Grid / Cards */}
+                    <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
+                      {group.items.map(({ item, idx }) => {
+                        const attended = isClassAttended(item, idx);
+                        const advice = smartBunkRecommendations.find(
+                          (r) => r.courseCode === item.courseCode && r.start === item.start
+                        )?.advice;
+
+                        return (
+                          <div
+                            key={idx}
+                            className={`p-3.5 sm:px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+                              isDayHoliday
+                                ? "opacity-50 bg-zinc-50/30 dark:bg-zinc-900/20"
+                                : attended
+                                ? "hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40"
+                                : "bg-rose-50/20 dark:bg-rose-950/10 hover:bg-rose-50/40"
+                            }`}
+                          >
+                            {/* Left: Time badge & Subject Info */}
+                            <div className="flex items-start gap-3">
+                              {/* Time Chip */}
+                              <div className="shrink-0 w-24 p-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800/80 text-center text-[11px] font-mono font-semibold text-zinc-700 dark:text-zinc-300">
+                                {item.start?.split(" ")[1]?.slice(0, 5)} - {item.end?.split(" ")[1]?.slice(0, 5)}
                               </div>
 
-                              <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                                <span className="flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-indigo-500" />
-                                  <span>
-                                    {item.start?.split(" ")[1]?.slice(0, 5)} - {item.end?.split(" ")[1]?.slice(0, 5)}
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h4
+                                    className={`text-sm font-bold leading-tight ${
+                                      !attended && !isDayHoliday
+                                        ? "text-rose-950 dark:text-rose-200 line-through decoration-rose-400"
+                                        : "text-zinc-900 dark:text-zinc-100"
+                                    }`}
+                                  >
+                                    {item.courseName}
+                                  </h4>
+
+                                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 font-semibold">
+                                    {item.courseCompName || "CLASS"}
                                   </span>
-                                </span>
-                                {item.content && (
-                                  <>
-                                    <span>•</span>
+
+                                  {/* Smart Bunk Pill */}
+                                  {!isDayHoliday && advice && (
+                                    <span
+                                      className={`hidden md:inline-flex items-center px-2 py-0.2 rounded-full text-[10px] font-bold ${
+                                        advice.bunkImpact === "safe"
+                                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-900/60"
+                                          : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400 border border-rose-200/60 dark:border-rose-900/60"
+                                      }`}
+                                    >
+                                      {advice.bunkImpact === "safe" ? "Safe to Skip" : "Must Attend"}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                                  {item.content && (
                                     <span className="flex items-center gap-1">
                                       <MapPin className="w-3 h-3 text-zinc-400" />
                                       <span>{item.content}</span>
                                     </span>
-                                  </>
-                                )}
-                                {item.facultyName && (
-                                  <>
-                                    <span>•</span>
-                                    <span>{item.facultyName}</span>
-                                  </>
-                                )}
+                                  )}
+                                  {item.facultyName && (
+                                    <>
+                                      <span>•</span>
+                                      <span>{item.facultyName}</span>
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
 
-                          <div className="flex items-center gap-2 shrink-0">
-                            {isDayHoliday ? (
-                              <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-300">
-                                Holiday (0 periods)
-                              </span>
-                            ) : (
-                              <>
-                                {advice && (
-                                  <span
-                                    className={`hidden sm:inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                      advice.bunkImpact === "safe"
-                                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
-                                        : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400"
+                            {/* Right: Modern Segmented Switch for Attend / Bunk */}
+                            <div className="flex items-center gap-2 self-end sm:self-center">
+                              {isDayHoliday ? (
+                                <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 px-3 py-1 rounded-lg bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800">
+                                  Holiday (Excluded)
+                                </span>
+                              ) : (
+                                <div className="inline-flex rounded-xl p-0.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200/60 dark:border-zinc-700/60">
+                                  <button
+                                    type="button"
+                                    onClick={() => setClassAttendance(item, idx, true)}
+                                    className={`flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                                      attended
+                                        ? "bg-emerald-600 text-white shadow-2xs"
+                                        : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900"
                                     }`}
                                   >
-                                    {advice.bunkImpact === "safe" ? "Safe Bunk" : "Must Attend"}
-                                  </span>
-                                )}
-
-                                <span
-                                  className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
-                                    attended
-                                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                      : "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
-                                  }`}
-                                >
-                                  {attended ? "Attending" : "Bunked"}
-                                </span>
-                              </>
-                            )}
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Attend</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setClassAttendance(item, idx, false)}
+                                    className={`flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                                      !attended
+                                        ? "bg-rose-600 text-white shadow-2xs"
+                                        : "text-zinc-500 dark:text-zinc-400 hover:text-zinc-900"
+                                    }`}
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                    <span>Bunk</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 4. TAB B: Subject Impact Breakdown */}
+      {activeTab === "subjects" && (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden shadow-xs">
+            <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 flex items-center justify-between">
+              <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 uppercase tracking-wider">
+                Simulated Impact by Course ({targetPercent}% Target)
+              </span>
+              <span className="text-xs text-zinc-500">
+                {subjectProjections.length} Courses
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-zinc-50 dark:bg-zinc-800/20 text-zinc-500 dark:text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-100 dark:border-zinc-800">
+                  <tr>
+                    <th className="py-3 px-4">Subject</th>
+                    <th className="py-3 px-4">Current %</th>
+                    <th className="py-3 px-4">Simulated Bunks</th>
+                    <th className="py-3 px-4">Projected %</th>
+                    <th className="py-3 px-4">Net Change</th>
+                    <th className="py-3 px-4">Margin at {targetPercent}%</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                  {subjectProjections.map((sub) => {
+                    const isSafe = sub.projectedPercentage >= targetPercent;
+                    return (
+                      <tr key={sub.courseCode} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/30 transition-colors">
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-zinc-900 dark:text-zinc-100">
+                            {sub.courseName}
+                          </div>
+                          <span className="font-mono text-[10px] text-zinc-400">
+                            {sub.courseCode}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 font-semibold text-zinc-700 dark:text-zinc-300">
+                          {sub.currentPercentage}%
+                          <div className="text-[10px] text-zinc-400 font-normal">
+                            ({sub.currentPresent}/{sub.currentTotal})
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          {sub.plannedBunked > 0 ? (
+                            <span className="font-bold text-rose-600 dark:text-rose-400">
+                              {sub.plannedBunked} bunks
+                            </span>
+                          ) : (
+                            <span className="text-zinc-400">0</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 font-bold text-zinc-900 dark:text-zinc-100 text-sm">
+                          {sub.projectedPercentage}%
+                          <div className="text-[10px] text-zinc-400 font-normal">
+                            ({sub.projectedPresent}/{sub.projectedTotal})
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 font-semibold">
+                          <span
+                            className={
+                              sub.percentageDelta >= 0
+                                ? "text-emerald-600 dark:text-emerald-400"
+                                : "text-rose-600 dark:text-rose-400"
+                            }
+                          >
+                            {sub.percentageDelta >= 0 ? `+${sub.percentageDelta}%` : `${sub.percentageDelta}%`}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold ${
+                              isSafe
+                                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
+                                : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400"
+                            }`}
+                          >
+                            {isSafe
+                              ? `${sub.safeBunks} safe bunks`
+                              : `Need ${sub.classesNeeded} classes`}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
