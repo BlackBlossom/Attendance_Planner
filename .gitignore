@@ -39,3 +39,5 @@ ENV/
 .DS_Store
 Thumbs.db
 *.log
+# HAR captures & session dumps
+*.har
