@@ -364,6 +364,7 @@ export default function Home() {
               <SchedulePlanner
                 schedule={schedule}
                 courses={courses}
+                pastDays={pastDays}
                 onExportICS={() => {}}
                 isLoading={isLoading}
                 onRangeChange={handleScheduleRangeChange}
