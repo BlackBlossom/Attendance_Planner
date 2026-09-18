@@ -12,8 +12,6 @@ import {
   CalendarOff,
   ArrowRight,
   RefreshCw,
-  ChevronDown,
-  ChevronUp,
   ShieldCheck,
   ShieldAlert,
   Layers,
@@ -21,9 +19,13 @@ import {
   X,
   CalendarDays,
   Flame,
-  Info,
+  Filter,
+  Eye,
+  EyeOff,
+  History,
+  CheckCircle2,
 } from "lucide-react";
-import { ScheduleClassItem, AttendanceCourseItem } from "@/lib/types";
+import { ScheduleClassItem, AttendanceCourseItem, DayWiseStatus } from "@/lib/types";
 import {
   calculateMetrics,
   evaluateBunkAdvice,
@@ -36,6 +38,7 @@ import { generateICS } from "@/lib/ics";
 interface SchedulePlannerProps {
   schedule: ScheduleClassItem[];
   courses: AttendanceCourseItem[];
+  pastDays?: DayWiseStatus[];
   onExportICS: () => void;
   isLoading: boolean;
   onRangeChange?: (startDate: string, endDate: string) => void;
@@ -44,6 +47,7 @@ interface SchedulePlannerProps {
 export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   schedule,
   courses,
+  pastDays = [],
   isLoading,
   onRangeChange,
 }) => {
@@ -55,6 +59,9 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
 
   // Selected day filter in Day Strip: "all" or specific normalized date key (e.g. "2026-09-14")
   const [selectedDayKey, setSelectedDayKey] = useState<string>("all");
+
+  // Date awareness: Hide classes that are completed or already marked present/absent
+  const [hideCompletedAndMarked, setHideCompletedAndMarked] = useState<boolean>(true);
 
   // Date range state
   const [rangePreset, setRangePreset] = useState<"current" | "next" | "twoWeeks" | "month" | "custom">("current");
@@ -93,6 +100,87 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     return datePart;
   };
 
+  // Helper to parse class end date & time
+  const parseClassEndDateTime = (item: ScheduleClassItem): Date | null => {
+    const endStr = item.end || item.start;
+    if (!endStr) return null;
+    const str = endStr.trim();
+    if (str.includes("/")) {
+      const [dmy, time] = str.split(" ");
+      const parts = dmy.split("/").map(Number);
+      if (parts.length === 3) {
+        const [d, m, y] = parts;
+        let hh = 23, mm = 59, ss = 59;
+        if (time) {
+          const t = time.split(":").map(Number);
+          hh = t[0] || 0;
+          mm = t[1] || 0;
+          ss = t[2] || 0;
+        }
+        return new Date(y, m - 1, d, hh, mm, ss);
+      }
+    }
+    const parsed = new Date(str);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  // Build index of lectures already marked P/A in pastDays history
+  const markedAttendanceInHistory = useMemo(() => {
+    const set = new Set<string>();
+    pastDays.forEach((day) => {
+      day.lectures.forEach((lec) => {
+        if (lec.status === "P" || lec.status === "A") {
+          // Key by date + lowercased course name snippet
+          const cleanName = (lec.courseName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          set.add(`${day.date}_${cleanName}`);
+        }
+      });
+    });
+    return set;
+  }, [pastDays]);
+
+  // Determine if a class is in the past OR has attendance marked
+  const getClassStatusMeta = (item: ScheduleClassItem) => {
+    const now = new Date();
+    const endDateTime = parseClassEndDateTime(item);
+    const isCompleted = endDateTime !== null && endDateTime.getTime() <= now.getTime();
+
+    // Check if ERP marked attendance on the item itself
+    const anyItem = item as any;
+    const isMarkedOnItem =
+      anyItem.isAttendanceMarked === true ||
+      anyItem.isAttendance === "P" ||
+      anyItem.isAttendance === "A" ||
+      anyItem.attendance === "PRESENT" ||
+      anyItem.attendance === "ABSENT";
+
+    // Check against history
+    const dateKey = normalizeDate(item.start);
+    const cleanCourse = (item.courseName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isMarkedInHistory = markedAttendanceInHistory.has(`${dateKey}_${cleanCourse}`);
+
+    const isMarked = isMarkedOnItem || isMarkedInHistory;
+    return { isCompleted, isMarked, shouldExclude: isCompleted || isMarked };
+  };
+
+  // Filter schedule based on time-awareness
+  const { activeUpcomingSchedule, completedOrMarkedCount } = useMemo(() => {
+    let completedCount = 0;
+    const active = schedule.filter((item) => {
+      const { shouldExclude } = getClassStatusMeta(item);
+      if (shouldExclude) {
+        completedCount++;
+        return !hideCompletedAndMarked; // Include only if user toggled "Show Past Classes"
+      }
+      return true;
+    });
+
+    return {
+      activeUpcomingSchedule: active,
+      completedOrMarkedCount: completedCount,
+    };
+  }, [schedule, hideCompletedAndMarked, markedAttendanceInHistory]);
+
   const getClassKey = (item: ScheduleClassItem, idx: number) => {
     return `${item.courseCode || "c"}_${item.start || idx}`;
   };
@@ -127,7 +215,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
 
   const markAll = (attend: boolean) => {
     const updated: { [key: string]: boolean } = {};
-    schedule.forEach((item, idx) => {
+    activeUpcomingSchedule.forEach((item, idx) => {
       if (!isHoliday(item)) {
         updated[getClassKey(item, idx)] = attend;
       }
@@ -137,7 +225,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
 
   const markDay = (targetDateKey: string, attend: boolean) => {
     const updated = { ...planMap };
-    schedule.forEach((item, idx) => {
+    activeUpcomingSchedule.forEach((item, idx) => {
       if (normalizeDate(item.start) === targetDateKey && !isHoliday(item)) {
         updated[getClassKey(item, idx)] = attend;
       }
@@ -165,12 +253,18 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     return map;
   }, [courses]);
 
-  // Compute end-to-end subject-wise and overall projections (EXCLUDING HOLIDAYS)
+  // Compute end-to-end subject-wise and overall projections (EXCLUDING HOLIDAYS & PAST/MARKED)
   const { subjectProjections, overallProjection, holidayClassesCount } = useMemo(() => {
     const plannedByCourse = new Map<string, { totalUpcoming: number; plannedAttended: number }>();
     let holidaysCount = 0;
 
-    schedule.forEach((item, idx) => {
+    // We ONLY project genuinely future, unrecorded classes
+    const classesToSimulate = activeUpcomingSchedule.filter((item) => {
+      const { shouldExclude } = getClassStatusMeta(item);
+      return !shouldExclude; // Never count completed or marked classes towards future additions
+    });
+
+    classesToSimulate.forEach((item, idx) => {
       if (isHoliday(item)) {
         holidaysCount += 1;
         return;
@@ -262,7 +356,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
       overallProjection: overall,
       holidayClassesCount: holidaysCount,
     };
-  }, [schedule, courseBaseMap, planMap, holidayDates, targetPercent]);
+  }, [activeUpcomingSchedule, courseBaseMap, planMap, holidayDates, targetPercent, markedAttendanceInHistory]);
 
   // Group classes by Date
   const classesByDate = useMemo(() => {
@@ -276,11 +370,10 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
       };
     } = {};
 
-    schedule.forEach((item, idx) => {
+    activeUpcomingSchedule.forEach((item, idx) => {
       const dateKey = normalizeDate(item.start);
       if (!groups[dateKey]) {
         const rawDate = item.start?.split(" ")[0] || dateKey;
-        // Parse Day of Week (e.g. Mon, Tue)
         let dayName = "";
         let shortDate = rawDate;
         try {
@@ -306,13 +399,15 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
     });
 
     return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
-  }, [schedule]);
+  }, [activeUpcomingSchedule]);
 
-  // Smart Bunk Recommendations
+  // Smart Bunk Recommendations (only for upcoming classes)
   const smartBunkRecommendations = useMemo(() => {
     const list: (ScheduleClassItem & { advice: any; index: number })[] = [];
-    schedule.forEach((item, idx) => {
-      if (isHoliday(item)) return;
+    activeUpcomingSchedule.forEach((item, idx) => {
+      const { shouldExclude } = getClassStatusMeta(item);
+      if (shouldExclude || isHoliday(item)) return;
+
       const code = item.courseCode;
       const base = courseBaseMap.get(code);
       if (base) {
@@ -321,13 +416,15 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
       }
     });
     return list;
-  }, [schedule, courseBaseMap, holidayDates, targetPercent]);
+  }, [activeUpcomingSchedule, courseBaseMap, holidayDates, targetPercent, markedAttendanceInHistory]);
 
   // Apply one-click "Optimal Bunk Strategy"
   const applyOptimalStrategy = () => {
     const updated = { ...planMap };
-    schedule.forEach((item, idx) => {
-      if (isHoliday(item)) return;
+    activeUpcomingSchedule.forEach((item, idx) => {
+      const { shouldExclude } = getClassStatusMeta(item);
+      if (shouldExclude || isHoliday(item)) return;
+
       const code = item.courseCode;
       const base = courseBaseMap.get(code);
       if (base) {
@@ -391,7 +488,10 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
   };
 
   const handleExportICS = () => {
-    const activeClasses = schedule.filter((c) => !isHoliday(c));
+    const activeClasses = activeUpcomingSchedule.filter((c) => {
+      const { shouldExclude } = getClassStatusMeta(c);
+      return !shouldExclude && !isHoliday(c);
+    });
     const icsContent = generateICS(activeClasses, `KIET Timetable (${targetPercent}% Goal)`);
     const blob = new Blob([icsContent], { type: "text/calendar;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -505,9 +605,9 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
 
             <button
               onClick={handleExportICS}
-              disabled={schedule.length === 0}
+              disabled={activeUpcomingSchedule.length === 0}
               className="p-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors shadow-2xs disabled:opacity-40"
-              title="Export to Calendar (.ics)"
+              title="Export Upcoming Timetable (.ics)"
             >
               <Download className="w-4 h-4" />
             </button>
@@ -541,8 +641,36 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
           </div>
         )}
 
+        {/* Date Awareness Filter Indicator */}
+        <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2 text-zinc-600 dark:text-zinc-400">
+            <History className="w-3.5 h-3.5 text-indigo-500" />
+            <span>
+              <strong>Time-Aware Filter:</strong> Showing only genuinely upcoming, unrecorded lectures.
+              {completedOrMarkedCount > 0 && ` (${completedOrMarkedCount} past / recorded lectures omitted)`}
+            </span>
+          </div>
+
+          <button
+            onClick={() => setHideCompletedAndMarked(!hideCompletedAndMarked)}
+            className="inline-flex items-center gap-1 font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+          >
+            {hideCompletedAndMarked ? (
+              <>
+                <Eye className="w-3.5 h-3.5" />
+                <span>Show Completed Classes</span>
+              </>
+            ) : (
+              <>
+                <EyeOff className="w-3.5 h-3.5" />
+                <span>Hide Completed Classes</span>
+              </>
+            )}
+          </button>
+        </div>
+
         {/* Live Simulation Metric Strip */}
-        <div className="mt-5 pt-5 border-t border-zinc-100 dark:border-zinc-800 grid grid-cols-2 sm:grid-cols-4 gap-4 items-center">
+        <div className="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-800 grid grid-cols-2 sm:grid-cols-4 gap-4 items-center">
           {/* Current -> Projected Score */}
           <div>
             <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
@@ -596,7 +724,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
           {/* Classes Breakdown */}
           <div>
             <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
-              Classes Simulated
+              Upcoming Classes
             </div>
             <div className="text-sm font-bold text-zinc-800 dark:text-zinc-200 mt-1 flex items-center gap-2">
               <span className="text-emerald-600">{overallProjection.totalPlannedAttended} Attending</span>
@@ -604,7 +732,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
               <span className="text-rose-600">{overallProjection.totalPlannedBunks} Bunked</span>
             </div>
             <div className="text-[11px] text-zinc-400 mt-0.5">
-              {holidayClassesCount > 0 ? `${holidayClassesCount} holiday classes omitted` : "No holidays in range"}
+              {holidayClassesCount > 0 ? `${holidayClassesCount} holiday classes omitted` : "Genuinely future unrecorded"}
             </div>
           </div>
 
@@ -734,10 +862,32 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
             })}
           </div>
 
-          {/* Classes List for Active Selection */}
+          {/* Classes List or All-Completed Fallback */}
           {visibleDateGroups.length === 0 ? (
-            <div className="p-12 text-center rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 text-zinc-400 text-xs">
-              No classes scheduled for this date range. Try switching to &quot;All Days&quot; or expanding your date range.
+            <div className="p-12 text-center rounded-2xl border border-dashed border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-xs">
+              <div className="w-12 h-12 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 mx-auto flex items-center justify-center mb-3">
+                <CheckCircle2 className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
+                All classes for this period are completed or already marked!
+              </h3>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-md mx-auto mt-1">
+                There are no upcoming, unrecorded classes remaining in this date range. Jump to next week to simulate future attendance.
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-3">
+                <button
+                  onClick={() => handlePresetSelect("next")}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition-all"
+                >
+                  Plan Next Week →
+                </button>
+                <button
+                  onClick={() => setHideCompletedAndMarked(false)}
+                  className="px-4 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 text-xs font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-all"
+                >
+                  Show Past Classes Anyway
+                </button>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -828,6 +978,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
                     {/* Classes Modern Grid / Cards */}
                     <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
                       {group.items.map(({ item, idx }) => {
+                        const { isCompleted, isMarked, shouldExclude } = getClassStatusMeta(item);
                         const attended = isClassAttended(item, idx);
                         const advice = smartBunkRecommendations.find(
                           (r) => r.courseCode === item.courseCode && r.start === item.start
@@ -837,7 +988,9 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
                           <div
                             key={idx}
                             className={`p-3.5 sm:px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                              isDayHoliday
+                              shouldExclude
+                                ? "opacity-60 bg-zinc-50/50 dark:bg-zinc-900/40"
+                                : isDayHoliday
                                 ? "opacity-50 bg-zinc-50/30 dark:bg-zinc-900/20"
                                 : attended
                                 ? "hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40"
@@ -855,7 +1008,7 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
                                 <div className="flex items-center gap-2">
                                   <h4
                                     className={`text-sm font-bold leading-tight ${
-                                      !attended && !isDayHoliday
+                                      !attended && !isDayHoliday && !shouldExclude
                                         ? "text-rose-950 dark:text-rose-200 line-through decoration-rose-400"
                                         : "text-zinc-900 dark:text-zinc-100"
                                     }`}
@@ -867,8 +1020,15 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
                                     {item.courseCompName || "CLASS"}
                                   </span>
 
+                                  {/* Past/Marked pill */}
+                                  {shouldExclude && (
+                                    <span className="inline-flex items-center px-2 py-0.2 rounded-full text-[10px] font-bold bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300">
+                                      {isMarked ? "Attendance Recorded" : "Finished"}
+                                    </span>
+                                  )}
+
                                   {/* Smart Bunk Pill */}
-                                  {!isDayHoliday && advice && (
+                                  {!isDayHoliday && !shouldExclude && advice && (
                                     <span
                                       className={`hidden md:inline-flex items-center px-2 py-0.2 rounded-full text-[10px] font-bold ${
                                         advice.bunkImpact === "safe"
@@ -898,11 +1058,15 @@ export const SchedulePlanner: React.FC<SchedulePlannerProps> = ({
                               </div>
                             </div>
 
-                            {/* Right: Modern Segmented Switch for Attend / Bunk */}
+                            {/* Right: Segmented Switch for Attend / Bunk */}
                             <div className="flex items-center gap-2 self-end sm:self-center">
                               {isDayHoliday ? (
                                 <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 px-3 py-1 rounded-lg bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800">
-                                  Holiday (Excluded)
+                                  Holiday (0 periods)
+                                </span>
+                              ) : shouldExclude ? (
+                                <span className="text-xs font-semibold text-zinc-500 px-3 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700">
+                                  Already Counted
                                 </span>
                               ) : (
                                 <div className="inline-flex rounded-xl p-0.5 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200/60 dark:border-zinc-700/60">
