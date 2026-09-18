@@ -3,8 +3,6 @@ api.txt
 secrets.txt
 token.txt
 *.token
-.env
-.env.*
 
 # Student attendance data dumps & test data
 attendance.json
@@ -34,10 +32,11 @@ ENV/
 .streamlit/secrets.toml
 
 # IDE & OS files
-.vscode/
 .idea/
 .DS_Store
 Thumbs.db
 *.log
 # HAR captures & session dumps
 *.har
+config.bat
+node_modules
